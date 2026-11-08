@@ -265,6 +265,16 @@ body:has([data-phone-footer]) [data-fab-spacer]{display:none}
 .toolbar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:12px}
 .toolbar .grow{flex:1 1 200px}
 .grid{display:grid;gap:12px}
+.form-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:520px){.form-2{grid-template-columns:1fr}}
+.dur-field{display:flex;gap:8px;align-items:flex-end}
+.dur-field label{flex:1}
+.dur-mgr{border:1px solid var(--line,#e2e8f0);border-radius:12px;padding:10px 12px;background:var(--ink-50);display:grid;gap:8px;max-height:260px;overflow:auto}
+.dur-mgr-head{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;font-size:.85em}
+.dur-list{display:grid;gap:6px}
+.dur-row{display:grid;grid-template-columns:1fr 84px auto auto;gap:6px;align-items:center}
+.dur-row.dur-add{grid-template-columns:1fr 84px auto;border-top:1px dashed var(--line,#e2e8f0);padding-top:8px}
+@media (max-width:520px){.dur-row{grid-template-columns:1fr 70px}.dur-row .btn{width:100%}.dur-row.dur-add{grid-template-columns:1fr 70px}.dur-row.dur-add .btn{grid-column:1/-1}}
 .form-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
 .form-grid .full{grid-column:1/-1}
 .row-actions{display:flex;gap:.4rem;flex-wrap:wrap}
@@ -505,3 +515,4 @@ table.list tbody tr:hover{background:rgba(238,244,255,.5)}
   #printRoot .a4{box-shadow:none;margin:0;height:297mm;min-height:0;overflow:hidden;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 #printRoot{display:none}
+.end-hint{font-weight:400;font-size:.85em}

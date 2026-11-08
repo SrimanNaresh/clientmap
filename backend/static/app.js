@@ -206,6 +206,32 @@ function projectForm(p) {
 }
 
 // ------------------------------------------------------------ customer master
+// End date for a contract of `months` starting on `start` (yyyy-mm-dd): 01-01 + 12 months → 31-12.
+function endAfterMonths(start, months) {
+  const s = parseISO(start);
+  const day = s.getDate(), e = new Date(s.getFullYear(), s.getMonth() + months, 1);
+  const last = new Date(e.getFullYear(), e.getMonth() + 1, 0).getDate();
+  // Same day next period minus one; if that month is too short (31 Jan + 1 month), end on its last day.
+  if (day > last) e.setDate(last); else e.setDate(day - 1);
+  return `${e.getFullYear()}-${pad(e.getMonth() + 1)}-${pad(e.getDate())}`;
+}
+function endAfterDays(start, days) {
+  const e = parseISO(start); e.setDate(e.getDate() + days - 1);
+  return `${e.getFullYear()}-${pad(e.getMonth() + 1)}-${pad(e.getDate())}`;
+}
+// End date from a start date and a duration: uses its Months, else reads the name ("18 Months", "2 Years", "15 Days", "1 Week").
+function endFromDuration(start, dur) {
+  if (!start || !dur) return '';
+  if (dur.months) return endAfterMonths(start, dur.months);
+  const m = /(\d+)\s*(day|week|month|year|yr)/i.exec(dur.name || '');
+  if (!m) return '';
+  const n = Number(m[1]), unit = m[2].toLowerCase();
+  if (!n) return '';
+  if (unit === 'day') return endAfterDays(start, n);
+  if (unit === 'week') return endAfterDays(start, n * 7);
+  return endAfterMonths(start, unit === 'month' ? n : n * 12);
+}
+const extUrl = u => /^https?:\/\//i.test(u) ? u : `https://${u}`;
 async function customers() {
   title('Customer Master');
   const cs = await api('GET', '/api/customers');
@@ -213,9 +239,16 @@ async function customers() {
   <div class="card table-wrap" style="padding:0" id="tbl"></div>`;
   const draw = () => {
     const q = $('#q').value.toLowerCase();
-    const rows = cs.filter(c => !q || c.name.toLowerCase().includes(q) || c.mobile.includes(q));
-    $('#tbl').innerHTML = rows.length ? `<table class="list stack"><thead><tr><th>Name</th><th>Mobile</th><th></th></tr></thead><tbody>
-    ${rows.map(c => `<tr><td data-l="Name"><b>${esc(c.name)}</b></td><td data-l="Mobile"><a href="tel:${esc(c.mobile)}">${esc(c.mobile)}</a></td>
+    const rows = cs.filter(c => !q || [c.name, c.mobile, c.contactPerson, c.url, c.address].some(x => (x || '').toLowerCase().includes(q)));
+    const dash = '<span class="muted">—</span>';
+    $('#tbl').innerHTML = rows.length ? `<table class="list stack"><thead><tr><th>Name</th><th>Contact person</th><th>Mobile</th><th>Address</th><th>URL</th><th>Period</th><th>Duration</th><th></th></tr></thead><tbody>
+    ${rows.map(c => `<tr><td data-l="Name"><b>${esc(c.name)}</b></td>
+    <td data-l="Contact">${esc(c.contactPerson) || dash}</td>
+    <td data-l="Mobile"><a href="tel:${esc(c.mobile)}">${esc(c.mobile)}</a></td>
+    <td data-l="Address" style="white-space:pre-line;max-width:260px">${esc(c.address) || dash}</td>
+    <td data-l="URL">${c.url ? `<a href="${esc(extUrl(c.url))}" target="_blank" rel="noopener">${esc(c.url.replace(/^https?:\/\//i, ''))}</a>` : dash}</td>
+    <td data-l="Period">${c.startDate || c.endDate ? `${fmtDate(c.startDate) || '…'} → ${fmtDate(c.endDate) || '…'}` : dash}</td>
+    <td data-l="Duration">${esc(c.duration) || dash}</td>
     <td class="actions"><div class="row-actions"><button class="btn sm" data-edit="${c.id}">Edit</button><button class="btn sm danger" data-del="${c.id}">Delete</button></div></td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">No customers.</div>';
     $$('[data-edit]').forEach(b => b.onclick = () => customerForm(cs.find(c => c.id == b.dataset.edit)));
@@ -228,16 +261,109 @@ async function customers() {
   $('#q').oninput = draw; draw();
   $('#add').onclick = () => customerForm();
 }
-function customerForm(c, after) {
+async function customerForm(c, after) {
+  let durs;
+  try { durs = await api('GET', '/api/durations'); } catch (e) { return toast(e.message, true); }
   const m = modal(`<h3>${c ? 'Edit customer' : 'Add customer'}</h3><form class="grid">
     <label>Customer name *<input name="name" required value="${esc(c?.name)}"></label>
-    <label>Mobile number *<input name="mobile" type="tel" inputmode="tel" required value="${esc(c?.mobile)}" placeholder="10-digit mobile"></label>
+    <div class="form-2">
+      <label>Contact person<input name="contactPerson" value="${esc(c?.contactPerson)}" placeholder="Person to contact"></label>
+      <label>Mobile number *<input name="mobile" type="tel" inputmode="tel" required value="${esc(c?.mobile)}" placeholder="10-digit mobile"></label>
+    </div>
+    <label>Address<textarea name="address" rows="2" placeholder="Door no, street, area, city, PIN">${esc(c?.address)}</textarea></label>
+    <label>URL<input name="url" type="text" inputmode="url" autocomplete="url" value="${esc(c?.url)}" placeholder="https://example.com"></label>
+    <div class="form-2">
+      <label>Start date<input name="startDate" type="date" value="${esc(c?.startDate || '')}"></label>
+      <div class="dur-field">
+        <label>Duration<select name="duration"></select></label>
+        <button type="button" class="btn" data-mgr aria-expanded="false" title="Add, edit or delete durations">Manage</button>
+      </div>
+    </div>
+    <label>End date <span class="muted end-hint">— calculated from Start date + Duration</span><input name="endDate" type="date" value="${esc(c?.endDate || '')}"></label>
+    <div class="dur-mgr" hidden>
+      <div class="dur-mgr-head"><b>Duration values</b><span class="muted">Months fill the End date from the Start date</span></div>
+      <div class="dur-list"></div>
+      <div class="dur-row dur-add"><input data-n placeholder="New duration, e.g. 18 Months"><input data-m type="number" min="1" max="600" inputmode="numeric" placeholder="Months"><button type="button" class="btn sm primary" data-add>Add</button></div>
+    </div>
     <div class="modal-actions"><button type="button" class="btn" data-x>Cancel</button><button class="btn primary">Save</button></div></form>`);
-  m.querySelector('[data-x]').onclick = closeModal;
-  m.querySelector('form').onsubmit = async e => {
-    e.preventDefault();
+  const f = m.querySelector('form'), el = f.elements;
+  const sel = el.duration, mgr = m.querySelector('.dur-mgr'), list = m.querySelector('.dur-list');
+  const durOf = name => durs.find(d => d.name === name) || (name ? { name } : null);
+  const fillSelect = value => {
+    const opts = durs.map(d => d.name);
+    if (value && !opts.includes(value)) opts.push(value);   // keep an old value that is no longer in the list
+    sel.innerHTML = `<option value="">— Select duration —</option>` + opts.map(n => `<option${n === value ? ' selected' : ''}>${esc(n)}</option>`).join('');
+  };
+  // Start date + Duration → End date (recalculated whenever either changes; still editable by hand).
+  const fillEnd = () => {
+    const end = endFromDuration(el.startDate.value, durOf(sel.value));
+    if (end) el.endDate.value = end;
+    el.endDate.min = el.startDate.value || '';
+  };
+  sel.onchange = fillEnd;
+  el.startDate.oninput = fillEnd;
+  el.endDate.min = el.startDate.value || '';
+  fillSelect(c?.duration || '');
+
+  const drawList = () => {
+    list.innerHTML = durs.length ? durs.map(d => `<div class="dur-row" data-id="${d.id}">
+      <input data-n value="${esc(d.name)}" aria-label="Duration name"><input data-m type="number" min="1" max="600" inputmode="numeric" value="${d.months ?? ''}" placeholder="Months" aria-label="Months">
+      <button type="button" class="btn sm" data-save>Save</button><button type="button" class="btn sm danger" data-del>Delete</button></div>`).join('')
+      : '<div class="muted" style="padding:.4rem 0">No durations yet — add one below.</div>';
+  };
+  const readRow = row => {
+    const name = row.querySelector('[data-n]').value.trim(), mv = row.querySelector('[data-m]').value;
+    if (!name) { toast('Enter a duration name', true); return null; }
+    return { name, months: mv ? Number(mv) : null };
+  };
+  list.onclick = async e => {
+    const row = e.target.closest('.dur-row'); if (!row) return;
+    const d = durs.find(x => x.id == row.dataset.id);
+    if (e.target.matches('[data-save]')) {
+      const body = readRow(row); if (!body) return;
+      try {
+        const saved = await api('PUT', `/api/durations/${d.id}`, body);
+        if (sel.value === d.name) sel.dataset.keep = saved.name;
+        Object.assign(d, saved); toast('Duration updated');
+        fillSelect(sel.dataset.keep || sel.value); delete sel.dataset.keep; fillEnd(); drawList();
+      } catch (err) { toast(err.message, true); }
+    } else if (e.target.matches('[data-del]')) {
+      const b = e.target;   // second click confirms (the modal is in use by this form)
+      if (!b.dataset.armed) { b.dataset.armed = 1; b.textContent = 'Confirm?'; setTimeout(() => { if (b.isConnected) { delete b.dataset.armed; b.textContent = 'Delete'; } }, 3000); return; }
+      try {
+        await api('DELETE', `/api/durations/${d.id}`);
+        durs = durs.filter(x => x !== d); toast('Duration deleted');
+        fillSelect(sel.value); drawList();
+      } catch (err) { toast(err.message, true); }
+    }
+  };
+  const addRow = m.querySelector('.dur-add');
+  const addDur = async () => {
+    const body = readRow(addRow); if (!body) return;
     try {
-      const saved = await api(c ? 'PUT' : 'POST', c ? `/api/customers/${c.id}` : '/api/customers', { name: e.target.name.value, mobile: e.target.mobile.value });
+      const saved = await api('POST', '/api/durations', body);
+      durs.push(saved); addRow.querySelector('[data-n]').value = ''; addRow.querySelector('[data-m]').value = '';
+      toast('Duration added'); fillSelect(saved.name); fillEnd(); drawList();
+    } catch (err) { toast(err.message, true); }
+  };
+  m.querySelector('[data-add]').onclick = addDur;
+  addRow.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); addDur(); } };
+  list.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); e.target.closest('.dur-row')?.querySelector('[data-save]').click(); } };
+  m.querySelector('[data-mgr]').onclick = e => {
+    mgr.hidden = !mgr.hidden; e.currentTarget.setAttribute('aria-expanded', !mgr.hidden);
+    e.currentTarget.textContent = mgr.hidden ? 'Manage' : 'Done';
+    if (!mgr.hidden) { drawList(); addRow.querySelector('[data-n]').focus(); }
+  };
+  m.querySelector('[data-x]').onclick = closeModal;
+  f.onsubmit = async e => {
+    e.preventDefault();
+    if (el.startDate.value && el.endDate.value && el.endDate.value < el.startDate.value) return toast('End date cannot be before start date', true);
+    const body = {
+      name: el.name.value, mobile: el.mobile.value, url: el.url.value.trim(), contactPerson: el.contactPerson.value.trim(), address: el.address.value.trim(),
+      startDate: el.startDate.value || null, endDate: el.endDate.value || null, duration: sel.value,
+    };
+    try {
+      const saved = await api(c ? 'PUT' : 'POST', c ? `/api/customers/${c.id}` : '/api/customers', body);
       closeModal(); toast('Customer saved'); after ? after(saved) : customers();
     } catch (err) { toast(err.message, true); }
   };
@@ -725,7 +851,13 @@ function printLetterhead(inv) {
 }
 async function invoiceView(id, action) {
   title('Invoice');
-  const [pkgs, clinics] = await Promise.all([api('GET', '/api/packages'), api('GET', '/api/clinics')]);
+  const [pkgs, clinics, custs] = await Promise.all([api('GET', '/api/packages'), api('GET', '/api/clinics'), api('GET', '/api/customers')]);
+  // Bill To choices: Customer Master entries first, then saved clinics.
+  const custEntry = c => ({ id: null, customerId: c.id, kind: 'Customer', name: c.name, mobile: c.mobile, contactPerson: c.contactPerson, url: c.url,
+    duration: c.duration, startDate: c.startDate, endDate: c.endDate, custAddress: c.address,
+    // printed under the name on the invoice: contact person, then the address
+    address: [c.contactPerson && `Kind Attn: ${c.contactPerson}`, c.address].filter(Boolean).join('\n') });
+  const billTo = () => [...custs.map(custEntry), ...clinics.map(c => ({ ...c, kind: 'Clinic' }))];
   if (id) {
     const inv = await api('GET', `/api/invoices/${id}`);
     const rows = pkgs.map(newRow);
@@ -750,11 +882,11 @@ async function invoiceView(id, action) {
     <div class="card grid" style="align-content:start">
       <div class="form-grid">
         <div class="full">
-          <label>Bill To — clinic / client *</label>
+          <label>Bill To — customer / clinic *</label>
           <div style="display:flex;gap:.4rem;margin-top:.25rem">
-            <div class="picker" style="flex:1"><input id="cq" autocomplete="off" placeholder="Search clinic by name, mobile or address…" value="${esc(inv.clinic?.name)}"><div class="picker-list" id="cl" hidden></div></div>
-            <button type="button" class="btn" id="addClinic">+ Add clinic</button>
-            <button type="button" class="btn" id="editClinic" ${inv.clinic?.id ? '' : 'hidden'}>Edit</button>
+            <div class="picker" style="flex:1"><input id="cq" autocomplete="off" placeholder="Search customer or clinic by name, mobile, contact person…" value="${esc(inv.clinic?.name)}"><div class="picker-list" id="cl" hidden></div></div>
+            <button type="button" class="btn" id="addClinic">+ Add customer</button>
+            <button type="button" class="btn" id="editClinic" ${inv.clinic?.id || inv.clinic?.customerId ? '' : 'hidden'}>Edit</button>
           </div>
           <div id="csel" class="muted" style="font-size:.85rem;margin-top:.3rem;white-space:pre-line"></div>
         </div>
@@ -833,20 +965,31 @@ async function invoiceView(id, action) {
   // clinic picker
   const showSel = () => {
     const c = inv.clinic;
-    $('#csel').textContent = c?.name ? [c.address, c.mobile ? `Mobile: ${c.mobile}` : ''].filter(Boolean).join('\n') || (c.id ? '' : 'Not saved as a clinic — use “Add clinic” to save details.') : '';
-    $('#editClinic').hidden = !c?.id;
+    const lines = c?.customerId
+      ? [c.contactPerson && `Contact person: ${c.contactPerson}`, c.custAddress && `Address: ${c.custAddress}`, c.mobile && `Mobile: ${c.mobile}`, c.url && `URL: ${c.url}`,
+         (c.startDate || c.endDate) && `Period: ${fmtDate(c.startDate) || '…'} → ${fmtDate(c.endDate) || '…'}${c.duration ? ` (${c.duration})` : ''}`]
+      : [c?.address, c?.mobile && `Mobile: ${c.mobile}`];
+    $('#csel').textContent = c?.name ? lines.filter(Boolean).join('\n') || (c.id ? '' : 'Not in Customer Master — use “Add customer” to save details.') : '';
+    $('#editClinic').hidden = !(c?.id || c?.customerId);
   };
   const cq = $('#cq'), cl = $('#cl');
   let hl = -1, matches = [];
   const drawList = () => {
     const q = cq.value.trim().toLowerCase();
-    matches = clinics.filter(c => !q || [c.name, c.mobile, c.address].some(x => (x || '').toLowerCase().includes(q))).slice(0, 50);
-    cl.innerHTML = matches.map((c, i) => `<div data-ci="${i}" class="${i === hl ? 'hl' : ''}"><b>${esc(c.name)}</b><small>${esc([c.mobile, c.address].filter(Boolean).join(' · '))}</small></div>`).join('')
-      + `<div data-add style="color:var(--brand2)">+ Add clinic${q ? ` “${esc(cq.value.trim())}”` : ''}</div>`;
+    matches = billTo().filter(c => !q || [c.name, c.mobile, c.address, c.contactPerson].some(x => (x || '').toLowerCase().includes(q))).slice(0, 50);
+    cl.innerHTML = matches.map((c, i) => `<div data-ci="${i}" class="${i === hl ? 'hl' : ''}"><b>${esc(c.name)} <span class="chip" style="font-size:.7em;font-weight:500">${c.kind}</span></b><small>${esc((c.customerId ? [c.contactPerson, c.mobile, c.custAddress] : [c.mobile, c.address]).filter(Boolean).join(' · '))}</small></div>`).join('')
+      + `<div data-add style="color:var(--brand2)">+ Add customer${q ? ` “${esc(cq.value.trim())}”` : ''}</div>`;
     cl.hidden = false;
     $$('[data-ci]', cl).forEach(d => d.onmousedown = e => { e.preventDefault(); pick(matches[d.dataset.ci]); });
-    $('[data-add]', cl).onmousedown = e => { e.preventDefault(); cl.hidden = true; clinicForm({ name: cq.value.trim() }); };
+    $('[data-add]', cl).onmousedown = e => { e.preventDefault(); cl.hidden = true; addCustomer(cq.value.trim()); };
   };
+  // Add or edit a Customer Master entry from here, then use it as Bill To.
+  const saveCust = saved => {
+    const i = custs.findIndex(x => x.id === saved.id); if (i >= 0) custs[i] = saved; else custs.push(saved);
+    custs.sort((a, b) => a.name.localeCompare(b.name));
+    pick(custEntry(saved));
+  };
+  const addCustomer = name => customerForm(name ? { name } : null, saveCust);
   const pick = c => { inv.clinic = { ...c }; cq.value = c.name; cl.hidden = true; showSel(); preview(); };
   cq.onfocus = () => { hl = -1; drawList(); };
   cq.oninput = () => { hl = -1; inv.clinic = cq.value.trim() ? { id: null, name: cq.value.trim(), address: '', mobile: '' } : null; drawList(); showSel(); preview(); };
@@ -875,8 +1018,12 @@ async function invoiceView(id, action) {
       } catch (err) { toast(err.message, true); }
     };
   };
-  $('#addClinic').onclick = () => clinicForm({ name: inv.clinic && !inv.clinic.id ? inv.clinic.name : '' });
-  $('#editClinic').onclick = () => clinicForm(clinics.find(c => c.id === inv.clinic?.id) || inv.clinic);
+  $('#addClinic').onclick = () => addCustomer(inv.clinic && !inv.clinic.id && !inv.clinic.customerId ? inv.clinic.name : '');
+  $('#editClinic').onclick = () => {
+    const c = inv.clinic;
+    if (c?.customerId) { const cu = custs.find(x => x.id === c.customerId); if (cu) customerForm(cu, saveCust); }
+    else clinicForm(clinics.find(x => x.id === c?.id) || c);
+  };
   $('#bdate').onchange = e => { inv.billDate = e.target.value; preview(); };
 
   $('#newInv').onclick = () => { INV = null; if (location.hash === '#/invoice') router(); else location.hash = '#/invoice'; };

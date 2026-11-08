@@ -284,10 +284,32 @@ def project_attachment(pid: int, uid: int = Depends(current_user)):
 class CustomerIn(BaseModel):
     name: str
     mobile: str
+    url: Optional[str] = None
+    contactPerson: Optional[str] = None
+    address: Optional[str] = None
+    startDate: Optional[dt.date] = None
+    endDate: Optional[dt.date] = None
+    duration: Optional[str] = None
 
 
 def _cust_out(r):
-    return {"id": r["Id"], "name": r["Name"], "mobile": r["Mobile"]}
+    return {
+        "id": r["Id"], "name": r["Name"], "mobile": r["Mobile"],
+        "url": r.get("Url") or "", "contactPerson": r.get("ContactPerson") or "", "address": r.get("Address") or "",
+        "startDate": r["StartDate"].isoformat() if r.get("StartDate") else None,
+        "endDate": r["EndDate"].isoformat() if r.get("EndDate") else None,
+        "duration": r.get("Duration") or "",
+    }
+
+
+def _cust_vals(body: CustomerIn):
+    if not body.name.strip() or not body.mobile.strip():
+        raise HTTPException(400, "Name and mobile are required")
+    if body.startDate and body.endDate and body.endDate < body.startDate:
+        raise HTTPException(400, "End date cannot be before start date")
+    clean = lambda v: (v or "").strip() or None
+    return (body.name.strip(), body.mobile.strip(), clean(body.url), clean(body.contactPerson), clean(body.address),
+            body.startDate, body.endDate, clean(body.duration))
 
 
 @app.get("/api/customers")
@@ -297,16 +319,18 @@ def list_customers(uid: int = Depends(current_user)):
 
 @app.post("/api/customers")
 def create_customer(body: CustomerIn, uid: int = Depends(current_user)):
-    if not body.name.strip() or not body.mobile.strip():
-        raise HTTPException(400, "Name and mobile are required")
-    r = db.execute("INSERT INTO Customers(UserId,Name,Mobile) OUTPUT INSERTED.* VALUES(%s,%s,%s)", (uid, body.name.strip(), body.mobile.strip()))
+    r = db.execute(
+        "INSERT INTO Customers(UserId,Name,Mobile,Url,ContactPerson,Address,StartDate,EndDate,Duration) OUTPUT INSERTED.* "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)", (uid, *_cust_vals(body))
+    )
     return _cust_out(r)
 
 
 @app.put("/api/customers/{cid}")
 def update_customer(cid: int, body: CustomerIn, uid: int = Depends(current_user)):
     r = db.execute(
-        "UPDATE Customers SET Name=%s,Mobile=%s OUTPUT INSERTED.* WHERE Id=%s AND UserId=%s", (body.name.strip(), body.mobile.strip(), cid, uid)
+        "UPDATE Customers SET Name=%s,Mobile=%s,Url=%s,ContactPerson=%s,Address=%s,StartDate=%s,EndDate=%s,Duration=%s "
+        "OUTPUT INSERTED.* WHERE Id=%s AND UserId=%s", (*_cust_vals(body), cid, uid)
     )
     if not r:
         raise HTTPException(404, "Customer not found")
@@ -1006,6 +1030,68 @@ def remove_package(pid: int, uid: int = Depends(current_user)):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- durations (customer contract length)
+DEFAULT_DURATIONS = [("1 Month", 1), ("3 Months", 3), ("6 Months", 6), ("1 Year", 12), ("2 Years", 24)]
+
+
+class DurationIn(BaseModel):
+    name: str
+    months: Optional[int] = None
+
+
+def _dur_out(r):
+    return {"id": r["Id"], "name": r["Name"], "months": r["Months"]}
+
+
+def _dur_vals(body: DurationIn):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Duration name is required")
+    if body.months is not None and not (1 <= body.months <= 600):
+        raise HTTPException(400, "Months must be between 1 and 600")
+    return name, body.months
+
+
+@app.get("/api/durations")
+def list_durations(uid: int = Depends(current_user)):
+    sql = "SELECT * FROM Durations WHERE UserId=%s AND IsDeleted=0 ORDER BY SortOrder,Id"
+    rows = db.query(sql, (uid,))
+    if not rows and not db.query("SELECT TOP 1 Id FROM Durations WHERE UserId=%s", (uid,), one=True):
+        for i, (n, m) in enumerate(DEFAULT_DURATIONS):
+            db.execute("INSERT INTO Durations(UserId,Name,Months,SortOrder) VALUES(%s,%s,%s,%s)", (uid, n, m, i))
+        rows = db.query(sql, (uid,))
+    return [_dur_out(r) for r in rows]
+
+
+@app.post("/api/durations")
+def add_duration(body: DurationIn, uid: int = Depends(current_user)):
+    name, months = _dur_vals(body)
+    r = db.execute(
+        "INSERT INTO Durations(UserId,Name,Months,SortOrder) OUTPUT INSERTED.* "
+        "VALUES(%s,%s,%s,(SELECT ISNULL(MAX(SortOrder),0)+1 FROM Durations WHERE UserId=%s))",
+        (uid, name, months, uid),
+    )
+    return _dur_out(r)
+
+
+@app.put("/api/durations/{did}")
+def update_duration(did: int, body: DurationIn, uid: int = Depends(current_user)):
+    name, months = _dur_vals(body)
+    old = db.query("SELECT Name FROM Durations WHERE Id=%s AND UserId=%s AND IsDeleted=0", (did, uid), one=True)
+    if not old:
+        raise HTTPException(404, "Duration not found")
+    r = db.execute("UPDATE Durations SET Name=%s,Months=%s OUTPUT INSERTED.* WHERE Id=%s AND UserId=%s", (name, months, did, uid))
+    if old["Name"] != name:  # keep customers pointing at the renamed value
+        db.execute("UPDATE Customers SET Duration=%s WHERE UserId=%s AND Duration=%s", (name, uid, old["Name"]))
+    return _dur_out(r)
+
+
+@app.delete("/api/durations/{did}")
+def remove_duration(did: int, uid: int = Depends(current_user)):
+    db.execute("UPDATE Durations SET IsDeleted=1 WHERE Id=%s AND UserId=%s", (did, uid))
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------- invoices
 class InvItem(BaseModel):
     packageName: str
@@ -1150,6 +1236,17 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/sw.js")
+def service_worker():
+    # Served from the root so its scope covers the whole app; never cached so updates roll out.
+    return FileResponse(STATIC_DIR / "sw.js", media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return FileResponse(STATIC_DIR / "manifest.webmanifest", media_type="application/manifest+json", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/")

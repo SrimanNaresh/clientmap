@@ -180,6 +180,19 @@ SCHEMA = [
         FinalAmount DECIMAL(14,2) NOT NULL DEFAULT 0,
         AmcAmount DECIMAL(14,2) NOT NULL DEFAULT 0,
         SortOrder INT NOT NULL DEFAULT 0)""",
+    "IF COL_LENGTH('dbo.Customers','Url') IS NULL ALTER TABLE dbo.Customers ADD Url NVARCHAR(500) NULL",
+    "IF COL_LENGTH('dbo.Customers','ContactPerson') IS NULL ALTER TABLE dbo.Customers ADD ContactPerson NVARCHAR(200) NULL",
+    "IF COL_LENGTH('dbo.Customers','StartDate') IS NULL ALTER TABLE dbo.Customers ADD StartDate DATE NULL",
+    "IF COL_LENGTH('dbo.Customers','EndDate') IS NULL ALTER TABLE dbo.Customers ADD EndDate DATE NULL",
+    "IF COL_LENGTH('dbo.Customers','Duration') IS NULL ALTER TABLE dbo.Customers ADD Duration NVARCHAR(100) NULL",
+    "IF COL_LENGTH('dbo.Customers','Address') IS NULL ALTER TABLE dbo.Customers ADD Address NVARCHAR(600) NULL",
+    """IF OBJECT_ID('dbo.Durations') IS NULL CREATE TABLE dbo.Durations(
+        Id INT IDENTITY PRIMARY KEY,
+        UserId INT NOT NULL REFERENCES dbo.Users(Id),
+        Name NVARCHAR(100) NOT NULL,
+        Months INT NULL,
+        SortOrder INT NOT NULL DEFAULT 0,
+        IsDeleted BIT NOT NULL DEFAULT 0)""",
     """IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Visits_User')
         CREATE INDEX IX_Visits_User ON dbo.Visits(UserId, IsDeleted, VisitDate)""",
 ]

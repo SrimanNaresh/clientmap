@@ -1,0 +1,23 @@
+{
+  "id": "/",
+  "name": "ClientMap · Personal Projects",
+  "short_name": "ClientMap",
+  "description": "Projects, customers, field visits and invoices.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#f5f7fb",
+  "theme_color": "#1d306e",
+  "icons": [
+    { "src": "/static/img/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/img/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/img/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Customers", "url": "/#/customers", "icons": [{ "src": "/static/img/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Visits", "url": "/#/visits", "icons": [{ "src": "/static/img/icon-192.png", "sizes": "192x192" }] },
+    { "name": "New invoice", "url": "/#/invoice", "icons": [{ "src": "/static/img/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
