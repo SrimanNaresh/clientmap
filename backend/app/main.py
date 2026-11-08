@@ -952,16 +952,102 @@ def _google_route(origin, dest, cats):
 
 # ---------------------------------------------------------------- clinics
 # ---------------------------------------------------------------- near me (places around the current location)
-NEARBY_CATS = ("pharmacy", "lab")
-NEARBY_RADII = (1000, 2000, 5000, 10000)
+# Categories and distances are small per-user lists the user can add to, edit and delete
+# (Lookups table: kind "near_cat" = name + search words, kind "near_km" = distance in km).
+DEFAULT_NEAR_CATS = [("Pharmacy", "pharmacy medical shop"), ("Lab", "diagnostic laboratory lab")]
+DEFAULT_NEAR_KM = ["1", "2", "5", "10"]
+LOOKUP_KINDS = ("near_cat", "near_km")
+NEAR_MAX_CATS = 8          # "All" runs one search per category
 _nearby_cache: dict = {}
+
+
+class LookupIn(BaseModel):
+    name: str = ""
+    value: Optional[str] = None
+
+
+def _lookup_out(r):
+    return {"id": r["Id"], "name": r["Name"], "value": r["Value"] or ""}
+
+
+def _lookup_rows(uid: int, kind: str):
+    sql = "SELECT * FROM Lookups WHERE UserId=%s AND Kind=%s AND IsDeleted=0 ORDER BY SortOrder,Id"
+    rows = db.query(sql, (uid, kind))
+    if not rows and not db.query("SELECT TOP 1 Id FROM Lookups WHERE UserId=%s AND Kind=%s", (uid, kind), one=True):
+        seed = DEFAULT_NEAR_CATS if kind == "near_cat" else [(f"{k} km", k) for k in DEFAULT_NEAR_KM]
+        for i, (n, v) in enumerate(seed):
+            db.execute("INSERT INTO Lookups(UserId,Kind,Name,Value,SortOrder) VALUES(%s,%s,%s,%s,%s)", (uid, kind, n, v, i))
+        rows = db.query(sql, (uid, kind))
+    if kind == "near_km":
+        rows = sorted(rows, key=lambda r: float(r["Value"] or 0))
+    return rows
+
+
+def _lookup_vals(kind: str, body: LookupIn):
+    if kind not in LOOKUP_KINDS:
+        raise HTTPException(404, "Unknown list")
+    if kind == "near_cat":
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "Category name is required")
+        return name[:100], ((body.value or "").strip() or name)[:300]
+    raw = (body.value or body.name or "").lower().replace("km", "").strip()
+    try:
+        km = float(raw)
+    except ValueError:
+        raise HTTPException(400, "Enter the distance in km, for example 3")
+    if not 0.1 <= km <= 50:
+        raise HTTPException(400, "Distance must be between 0.1 and 50 km")
+    v = f"{km:g}"
+    return f"{v} km", v
+
+
+@app.get("/api/lookups/{kind}")
+def list_lookups(kind: str, uid: int = Depends(current_user)):
+    if kind not in LOOKUP_KINDS:
+        raise HTTPException(404, "Unknown list")
+    return [_lookup_out(r) for r in _lookup_rows(uid, kind)]
+
+
+@app.post("/api/lookups/{kind}")
+def add_lookup(kind: str, body: LookupIn, uid: int = Depends(current_user)):
+    name, value = _lookup_vals(kind, body)
+    r = db.execute(
+        "INSERT INTO Lookups(UserId,Kind,Name,Value,SortOrder) OUTPUT INSERTED.* "
+        "VALUES(%s,%s,%s,%s,(SELECT ISNULL(MAX(SortOrder),0)+1 FROM Lookups WHERE UserId=%s AND Kind=%s))",
+        (uid, kind, name, value, uid, kind),
+    )
+    return _lookup_out(r)
+
+
+@app.put("/api/lookups/{kind}/{lid}")
+def update_lookup(kind: str, lid: int, body: LookupIn, uid: int = Depends(current_user)):
+    name, value = _lookup_vals(kind, body)
+    r = db.execute(
+        "UPDATE Lookups SET Name=%s,Value=%s OUTPUT INSERTED.* WHERE Id=%s AND UserId=%s AND Kind=%s AND IsDeleted=0",
+        (name, value, lid, uid, kind),
+    )
+    if not r:
+        raise HTTPException(404, "Item not found")
+    return _lookup_out(r)
+
+
+@app.delete("/api/lookups/{kind}/{lid}")
+def delete_lookup(kind: str, lid: int, uid: int = Depends(current_user)):
+    if kind not in LOOKUP_KINDS:
+        raise HTTPException(404, "Unknown list")
+    left = db.query("SELECT COUNT(*) n FROM Lookups WHERE UserId=%s AND Kind=%s AND IsDeleted=0", (uid, kind), one=True)
+    if left and left["n"] <= 1:
+        raise HTTPException(400, "Keep at least one item in the list")
+    db.execute("UPDATE Lookups SET IsDeleted=1 WHERE Id=%s AND UserId=%s AND Kind=%s", (lid, uid, kind))
+    return {"ok": True}
 
 
 class NearbyIn(BaseModel):
     lat: float
     lng: float
-    category: str = "all"
-    radiusM: int = 2000
+    categoryIds: List[int] = []     # empty = all categories
+    radiusKm: float = 2
 
 
 def _dist_m(a_lat, a_lng, b_lat, b_lng):
@@ -978,17 +1064,34 @@ def _box(lat, lng, radius):
     return lat - dlat, lng - dlng, lat + dlat, lng + dlng
 
 
+def _osm_kind(cat):
+    """Map a user category onto the built-in OpenStreetMap kinds, if its words match one."""
+    t = f"{cat['name']} {cat['query']}".lower()
+    if re.search(r"pharm|medical|chemist|drug", t):
+        return "pharmacy"
+    if re.search(r"\blabs?\b|laborator|diagnos|scan", t):
+        return "lab"
+    if re.search(r"clinic|doctor|dental|dentist|hospital", t):
+        return "clinic"
+    return None
+
+
+def _place(pid, name, cat, address, plat, plng, maps_url, phone="", rating=None, count=None, open_now=None):
+    return {"id": pid, "name": name, "category": cat["id"], "categoryName": cat["name"], "address": address,
+            "lat": plat, "lng": plng, "phone": phone, "rating": rating, "ratingCount": count, "openNow": open_now,
+            "mapsUrl": maps_url}
+
+
 def _google_nearby(lat, lng, radius, cats):
     la1, lo1, la2, lo2 = _box(lat, lng, radius)
     seen, out = set(), []
-    for c in cats:
-        meta = CATEGORIES[c]
+    for cat in cats:
         req = {
-            "textQuery": meta["query"], "pageSize": 20, "regionCode": "IN", "rankPreference": "DISTANCE",
+            "textQuery": cat["query"], "pageSize": 20, "regionCode": "IN", "rankPreference": "DISTANCE",
             "locationRestriction": {"rectangle": {"low": {"latitude": la1, "longitude": lo1}, "high": {"latitude": la2, "longitude": lo2}}},
         }
-        if meta["type"]:
-            req["includedType"] = meta["type"]
+        if _osm_kind(cat) == "pharmacy":
+            req["includedType"] = "pharmacy"
         pr = _g_post(
             "https://places.googleapis.com/v1/places:searchText", req,
             "places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,"
@@ -999,45 +1102,69 @@ def _google_nearby(lat, lng, radius, cats):
                 continue
             seen.add(p["id"])
             loc = p["location"]
-            out.append({
-                "id": p["id"], "name": p.get("displayName", {}).get("text", ""), "category": c,
-                "address": p.get("formattedAddress", ""), "lat": loc["latitude"], "lng": loc["longitude"],
-                "phone": p.get("nationalPhoneNumber", ""), "rating": p.get("rating"), "ratingCount": p.get("userRatingCount"),
-                "openNow": (p.get("currentOpeningHours") or {}).get("openNow"), "mapsUrl": p.get("googleMapsUri"),
-            })
+            out.append(_place(p["id"], p.get("displayName", {}).get("text", ""), cat, p.get("formattedAddress", ""),
+                              loc["latitude"], loc["longitude"], p.get("googleMapsUri"), p.get("nationalPhoneNumber", ""),
+                              p.get("rating"), p.get("userRatingCount"), (p.get("currentOpeningHours") or {}).get("openNow")))
     return out
+
+
+def _osm_addr(tags):
+    return ", ".join(x for x in (
+        " ".join(filter(None, [tags.get("addr:housenumber"), tags.get("addr:street")])),
+        tags.get("addr:suburb") or tags.get("addr:place"), tags.get("addr:city"), tags.get("addr:postcode"),
+    ) if x)
+
+
+def _photon_text(box, query):
+    """Free-text place search inside a box (for categories that are not pharmacy / lab / clinic)."""
+    la1, lo1, la2, lo2 = box
+    r = httpx.get("https://photon.komoot.io/api/", headers=OSM_UA, timeout=25,
+                  params={"q": query, "bbox": f"{lo1:.5f},{la1:.5f},{lo2:.5f},{la2:.5f}", "limit": "50"})
+    r.raise_for_status()
+    return r.json().get("features", [])
 
 
 def _osm_nearby(lat, lng, radius, cats):
     box = _box(lat, lng, radius)
-    data = _photon_places([box], cats)
-    if data is None:
-        data = _overpass_places([box], cats)
-    if data is None:
-        raise HTTPException(502, "The places service is busy. Please search again in a minute.")
-    seen, out = set(), []
-    for el in data.get("elements", []):
-        tags = el.get("tags", {})
-        name = tags.get("name") or tags.get("name:en")
-        plat = el.get("lat") or el.get("center", {}).get("lat")
-        plng = el.get("lon") or el.get("center", {}).get("lon")
-        cat = _osm_category(tags)
-        if not name or plat is None or cat not in cats:
-            continue
-        k = (name.lower(), round(plat, 4), round(plng, 4))
-        if k in seen:
-            continue
-        seen.add(k)
-        addr = ", ".join(x for x in (
-            " ".join(filter(None, [tags.get("addr:housenumber"), tags.get("addr:street")])),
-            tags.get("addr:suburb") or tags.get("addr:place"), tags.get("addr:city"), tags.get("addr:postcode"),
-        ) if x)
-        out.append({
-            "id": f"osm-{el['type']}-{el['id']}", "name": name, "category": cat, "address": addr,
-            "lat": plat, "lng": plng, "phone": tags.get("phone") or tags.get("contact:phone") or "",
-            "rating": None, "ratingCount": None, "openNow": None,
-            "mapsUrl": f"https://www.google.com/maps/search/?api=1&query={plat},{plng}",
-        })
+    kinds = {c["id"]: _osm_kind(c) for c in cats}
+    builtin = sorted({k for k in kinds.values() if k})
+    out, seen = [], set()
+    if builtin:
+        data = _photon_places([box], builtin) or _overpass_places([box], builtin)
+        if data is None:
+            raise HTTPException(502, "The places service is busy. Please search again in a minute.")
+        for el in data.get("elements", []):
+            tags = el.get("tags", {})
+            name = tags.get("name") or tags.get("name:en")
+            plat = el.get("lat") or el.get("center", {}).get("lat")
+            plng = el.get("lon") or el.get("center", {}).get("lon")
+            kind = _osm_category(tags)
+            cat = next((c for c in cats if kinds[c["id"]] == kind), None)
+            if not name or plat is None or not cat:
+                continue
+            k = (name.lower(), round(plat, 4), round(plng, 4))
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(_place(f"osm-{el['type']}-{el['id']}", name, cat, _osm_addr(tags), plat, plng,
+                              f"https://www.google.com/maps/search/?api=1&query={plat},{plng}",
+                              tags.get("phone") or tags.get("contact:phone") or ""))
+    for cat in (c for c in cats if not kinds[c["id"]]):
+        feats = _safe(lambda q: _photon_text(box, q), cat["query"]) or []
+        for f in feats:
+            pr = f.get("properties", {})
+            name = pr.get("name")
+            if not name:
+                continue
+            plng, plat = f["geometry"]["coordinates"][:2]
+            k = (name.lower(), round(plat, 4), round(plng, 4))
+            if k in seen:
+                continue
+            seen.add(k)
+            addr = ", ".join(x for x in (" ".join(filter(None, [pr.get("housenumber"), pr.get("street")])),
+                                         pr.get("district"), pr.get("city"), pr.get("postcode")) if x)
+            out.append(_place(f"osm-{pr.get('osm_type', 'N')}-{pr.get('osm_id')}", name, cat, addr, plat, plng,
+                              f"https://www.google.com/maps/search/?api=1&query={plat},{plng}"))
     return out
 
 
@@ -1045,11 +1172,13 @@ def _osm_nearby(lat, lng, radius, cats):
 def nearby(body: NearbyIn, uid: int = Depends(current_user)):
     if not (-90 <= body.lat <= 90 and -180 <= body.lng <= 180):
         raise HTTPException(400, "Invalid location")
-    cats = list(NEARBY_CATS) if body.category == "all" else [body.category]
-    if any(c not in NEARBY_CATS for c in cats):
-        raise HTTPException(400, "Unknown category")
-    radius = body.radiusM if body.radiusM in NEARBY_RADII else 2000
-    key = (round(body.lat, 3), round(body.lng, 3), tuple(cats), radius)
+    all_cats = [{"id": r["Id"], "name": r["Name"], "query": r["Value"] or r["Name"]} for r in _lookup_rows(uid, "near_cat")]
+    cats = [c for c in all_cats if not body.categoryIds or c["id"] in body.categoryIds]
+    if not cats:
+        raise HTTPException(400, "Choose a category")
+    cats = cats[:NEAR_MAX_CATS]
+    radius = round(min(50.0, max(0.1, body.radiusKm)) * 1000)
+    key = (round(body.lat, 3), round(body.lng, 3), tuple((c["id"], c["query"]) for c in cats), radius)
     hit = _nearby_cache.get(key)
     if hit and time.time() - hit[0] < 1800:
         return hit[1]
@@ -1063,7 +1192,7 @@ def nearby(body: NearbyIn, uid: int = Depends(current_user)):
     places = _google_nearby(body.lat, body.lng, radius, cats) if MAPS_SERVER_KEY else _osm_nearby(body.lat, body.lng, radius, cats)
     for p in places:
         p["distanceM"] = round(_dist_m(body.lat, body.lng, p["lat"], p["lng"]))
-    places = sorted((p for p in places if p["distanceM"] <= radius * 1.05), key=lambda p: p["distanceM"])[:60]
+    places = sorted((p for p in places if p["distanceM"] <= radius * 1.05), key=lambda p: p["distanceM"])[:80]
     out = {"provider": "google" if MAPS_SERVER_KEY else "osm", "radiusM": radius, "places": places}
     _nearby_cache[key] = (time.time(), out)
     if len(_nearby_cache) > 300:

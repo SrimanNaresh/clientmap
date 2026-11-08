@@ -264,7 +264,7 @@ async function customers() {
 async function customerForm(c, after) {
   let durs;
   try { durs = await api('GET', '/api/durations'); } catch (e) { return toast(e.message, true); }
-  const m = modal(`<h3>${c ? 'Edit customer' : 'Add customer'}</h3><form class="grid">
+  const m = modal(`<h3>${c?.id ? 'Edit customer' : 'Add customer'}</h3><form class="grid">
     <label>Customer name *<input name="name" required value="${esc(c?.name)}"></label>
     <div class="form-2">
       <label>Contact person<input name="contactPerson" value="${esc(c?.contactPerson)}" placeholder="Person to contact"></label>
@@ -363,7 +363,7 @@ async function customerForm(c, after) {
       startDate: el.startDate.value || null, endDate: el.endDate.value || null, duration: sel.value,
     };
     try {
-      const saved = await api(c ? 'PUT' : 'POST', c ? `/api/customers/${c.id}` : '/api/customers', body);
+      const saved = await api(c?.id ? 'PUT' : 'POST', c?.id ? `/api/customers/${c.id}` : '/api/customers', body);
       closeModal(); toast('Customer saved'); after ? after(saved) : customers();
     } catch (err) { toast(err.message, true); }
   };
@@ -426,10 +426,16 @@ function loadMaps() {
 }
 // ------------------------------------------------------------ near me (pharmacies / labs around the current location)
 let nearState = null;   // kept while the app is open, so going back shows the last results
+const normName = s => String(s || '').toLowerCase().replace(/[^a-z0-9஀-௿]+/g, ' ').trim();
+// one colour per category: first two keep the old pharmacy green / lab purple
+const CAT_COLORS = ['#16a34a', '#9333ea', '#2563eb', '#ea580c', '#0891b2', '#db2777', '#ca8a04', '#4f46e5'];
+const catColor = id => { const i = (nearState?.cats || []).findIndex(c => c.id === id); return i < 0 ? '#64748b' : CAT_COLORS[i % CAT_COLORS.length]; };
 async function nearView() {
   title('Near Me');
-  const st = nearState || { loc: null, category: 'all', radiusM: 2000, data: null, filter: '' };
+  const st = nearState || { loc: null, catId: 'all', km: 2, data: null, filter: '' };
   nearState = st;
+  try { [st.cats, st.kms] = await Promise.all([api('GET', '/api/lookups/near_cat'), api('GET', '/api/lookups/near_km')]); }
+  catch (e) { view.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
   view.innerHTML = `<div class="toolbar"><h2 class="grow">Near Me</h2></div>
   <div class="card grid nm-form">
     <div class="nm-loc">
@@ -437,20 +443,83 @@ async function nearView() {
       <div class="nm-loc-txt" id="nmLocTxt"></div>
     </div>
     <div class="nm-row">
-      <label>Category<select id="nmCat"><option value="all">All</option><option value="pharmacy">Pharmacy</option><option value="lab">Lab</option></select></label>
-      <label>Within<select id="nmRad"><option value="1000">1 km</option><option value="2000">2 km</option><option value="5000">5 km</option><option value="10000">10 km</option></select></label>
+      <div class="nm-pick"><label>Category<select id="nmCat"></select></label><button type="button" class="btn" data-mgr="cat" aria-expanded="false">Manage</button></div>
+      <div class="nm-pick"><label>Within<select id="nmRad"></select></label><button type="button" class="btn" data-mgr="km" aria-expanded="false">Manage</button></div>
       <button type="button" class="btn primary nm-go" id="nmGo"><svg class="ic"><use href="#i-search"/></svg>Search</button>
     </div>
+    <div class="lk-panel" id="lkCat" hidden></div>
+    <div class="lk-panel" id="lkKm" hidden></div>
     ${CFG.routeProvider === 'osm' ? '<p class="muted nm-note">Using free OpenStreetMap data, so phone numbers and opening hours are often missing.</p>' : ''}
   </div>
   <div id="nmRes"></div>`;
-  const locTxt = $('#nmLocTxt'), go = $('#nmGo');
-  $('#nmCat').value = st.category; $('#nmRad').value = String(st.radiusM);
+  const locTxt = $('#nmLocTxt'), go = $('#nmGo'), catSel = $('#nmCat'), kmSel = $('#nmRad');
+  const fillSelects = () => {
+    if (st.catId !== 'all' && !st.cats.some(c => c.id === st.catId)) st.catId = 'all';
+    if (!st.kms.some(k => Number(k.value) === st.km)) st.km = Number((st.kms.find(k => Number(k.value) >= 2) || st.kms[0])?.value || 2);
+    catSel.innerHTML = `<option value="all">All</option>` + st.cats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    kmSel.innerHTML = st.kms.map(k => `<option value="${esc(k.value)}">${esc(k.name)}</option>`).join('');
+    catSel.value = String(st.catId); kmSel.value = String(st.km);
+  };
+  fillSelects();
+  catSel.onchange = () => { st.catId = catSel.value === 'all' ? 'all' : Number(catSel.value); };
+  kmSel.onchange = () => { st.km = Number(kmSel.value); };
+
+  // Manage panels: add / edit / delete categories and distances inline (keeps the form as it is)
+  const LK = {
+    cat: { kind: 'near_cat', box: $('#lkCat'), list: () => st.cats, title: 'Categories', hint: 'Search words are what is looked up, e.g. “dental clinic dentist”.',
+      row: c => `<input data-n value="${esc(c?.name || '')}" placeholder="Name, e.g. Dental" aria-label="Category name"><input data-v value="${esc(c?.value || '')}" placeholder="Search words (optional)" aria-label="Search words">`,
+      read: r => ({ name: r.querySelector('[data-n]').value.trim(), value: r.querySelector('[data-v]').value.trim() }) },
+    km: { kind: 'near_km', box: $('#lkKm'), list: () => st.kms, title: 'Distances', hint: 'Distance in km, between 0.1 and 50.',
+      row: k => `<input data-v type="number" min="0.1" max="50" step="0.1" inputmode="decimal" value="${esc(k?.value || '')}" placeholder="km, e.g. 3" aria-label="Distance in km">`,
+      read: r => ({ name: '', value: r.querySelector('[data-v]').value.trim() }) },
+  };
+  const drawLk = key => {
+    const L = LK[key], items = L.list();
+    L.box.innerHTML = `<div class="lk-head"><b>${L.title}</b><span class="muted">${L.hint}</span></div>
+      <div class="lk-list">${items.map(it => `<div class="lk-row lk-${key}" data-id="${it.id}">${L.row(it)}<button type="button" class="btn sm" data-save>Save</button><button type="button" class="btn sm danger" data-del>Delete</button></div>`).join('')}</div>
+      <div class="lk-row lk-${key} lk-add">${L.row(null)}<button type="button" class="btn sm primary" data-add>Add</button></div>`;
+  };
+  const reload = async key => {
+    const fresh = await api('GET', `/api/lookups/${LK[key].kind}`);
+    if (key === 'cat') st.cats = fresh; else st.kms = fresh;
+    fillSelects(); drawLk(key);
+  };
+  Object.keys(LK).forEach(key => {
+    const L = LK[key];
+    L.box.onclick = async e => {
+      const row = e.target.closest('.lk-row'); if (!row) return;
+      try {
+        if (e.target.matches('[data-add]')) {
+          const body = L.read(row); if (!body.name && !body.value) return toast('Enter a value first', true);
+          const it = await api('POST', `/api/lookups/${L.kind}`, body); await reload(key);
+          if (key === 'cat') st.catId = it.id; else st.km = Number(it.value);
+          fillSelects(); toast('Added');
+        } else if (e.target.matches('[data-save]')) {
+          await api('PUT', `/api/lookups/${L.kind}/${row.dataset.id}`, L.read(row)); await reload(key); toast('Updated');
+        } else if (e.target.matches('[data-del]')) {
+          const b = e.target;   // second tap confirms
+          if (!b.dataset.armed) { b.dataset.armed = 1; b.textContent = 'Confirm?'; setTimeout(() => { if (b.isConnected) { delete b.dataset.armed; b.textContent = 'Delete'; } }, 3000); return; }
+          await api('DELETE', `/api/lookups/${L.kind}/${row.dataset.id}`); await reload(key); toast('Deleted');
+        }
+      } catch (err) { toast(err.message, true); }
+    };
+    L.box.onkeydown = e => { if (e.key === 'Enter' && e.target.matches('input')) { e.preventDefault(); e.target.closest('.lk-row').querySelector('[data-add],[data-save]').click(); } };
+  });
+  $$('[data-mgr]').forEach(b => b.onclick = () => {
+    const key = b.dataset.mgr, L = LK[key], open = L.box.hidden;
+    Object.entries(LK).forEach(([k, o]) => { o.box.hidden = true; const mb = $(`[data-mgr="${k}"]`); mb.textContent = 'Manage'; mb.setAttribute('aria-expanded', 'false'); });
+    if (open) { drawLk(key); L.box.hidden = false; b.textContent = 'Done'; b.setAttribute('aria-expanded', 'true'); L.box.querySelector('.lk-add input')?.focus(); }
+  });
   const showLoc = () => {
-    locTxt.className = 'nm-loc-txt' + (st.loc ? ' ok' : '');
-    locTxt.textContent = st.loc ? `Location found: ${st.loc.lat.toFixed(5)}, ${st.loc.lng.toFixed(5)} (±${Math.round(st.loc.acc)} m)` : 'Tap “Get current location” first.';
+    const rough = st.loc && st.loc.acc > 1000;   // computers without GPS guess from the internet connection
+    locTxt.className = 'nm-loc-txt' + (st.loc ? (rough ? ' warn' : ' ok') : '');
+    locTxt.textContent = !st.loc ? 'Tap “Get current location” first.'
+      : rough ? `Approximate location only (±${km(st.loc.acc)}). This device has no GPS fix, so results may be from the wrong area. For accurate results use your phone with location / GPS on.`
+      : `Location found: ${st.loc.lat.toFixed(5)}, ${st.loc.lng.toFixed(5)} (±${Math.round(st.loc.acc)} m)`;
   };
   showLoc();
+  // names already in Customer Master, so saved places show "Saved"
+  api('GET', '/api/customers').then(cs => { st.saved = new Set(cs.map(c => normName(c.name))); if (st.data) drawNear(); }).catch(() => {});
 
   const locate = () => new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error('This browser cannot share your location.'));
@@ -469,7 +538,6 @@ async function nearView() {
   };
 
   go.onclick = async () => {
-    st.category = $('#nmCat').value; st.radiusM = Number($('#nmRad').value);
     if (!st.loc) {   // no location yet: get it first, then search
       go.disabled = true; locTxt.className = 'nm-loc-txt'; locTxt.textContent = 'Finding your location…';
       try { st.loc = await locate(); showLoc(); } catch (e) { locTxt.className = 'nm-loc-txt err'; locTxt.textContent = e.message; go.disabled = false; return; }
@@ -477,7 +545,8 @@ async function nearView() {
     go.disabled = true; go.lastChild.textContent = 'Searching…';
     $('#nmRes').innerHTML = '<div class="card empty">Searching nearby…</div>';
     try {
-      st.data = await api('POST', '/api/nearby', { lat: st.loc.lat, lng: st.loc.lng, category: st.category, radiusM: st.radiusM });
+      st.data = await api('POST', '/api/nearby', { lat: st.loc.lat, lng: st.loc.lng, categoryIds: st.catId === 'all' ? [] : [st.catId], radiusKm: st.km });
+      st.searchedLabel = st.catId === 'all' ? 'places' : (st.cats.find(c => c.id === st.catId)?.name || 'places');
       st.filter = ''; drawNear();
     } catch (e) { $('#nmRes').innerHTML = ''; toast(e.message, true); }
     finally { go.disabled = false; go.lastChild.textContent = 'Search'; }
@@ -486,10 +555,10 @@ async function nearView() {
 }
 function drawNear() {
   const st = nearState, d = st.data, res = $('#nmRes'); if (!res) return;
-  const counts = d.places.reduce((a, p) => (a[p.category] = (a[p.category] || 0) + 1, a), {});
-  const summary = Object.entries(counts).map(([c, n]) => `${n} ${CAT[c].label.toLowerCase()}${n > 1 ? (c === 'pharmacy' ? 'ies' : 's') : ''}`.replace('pharmacyies', 'pharmacies')).join(' · ');
-  if (!d.places.length) { res.innerHTML = `<div class="card empty">No ${st.category === 'all' ? 'pharmacies or labs' : CAT[st.category].label.toLowerCase() + 's'} found within ${km(d.radiusM)}. Try a wider distance.</div>`; return; }
-  res.innerHTML = `<div class="nm-bar"><b>${d.places.length} places within ${km(d.radiusM)}</b><span class="muted">${summary}</span>
+  const counts = d.places.reduce((a, p) => (a[p.categoryName] = (a[p.categoryName] || 0) + 1, a), {});
+  const summary = Object.entries(counts).map(([c, n]) => `${esc(c)}: ${n}`).join(' · ');
+  if (!d.places.length) { res.innerHTML = `<div class="card empty">No ${esc(st.searchedLabel || 'places')} found within ${km(d.radiusM)}. Try a wider distance.</div>`; return; }
+  res.innerHTML = `<div class="nm-bar"><b>${d.places.length} place${d.places.length === 1 ? '' : 's'} within ${km(d.radiusM)}</b><span class="muted">${summary}</span>
       <input id="nmQ" placeholder="Filter by name or area…" value="${esc(st.filter)}"></div>
     <div class="nm-list" id="nmList"></div>`;
   const draw = () => {
@@ -498,15 +567,24 @@ function drawNear() {
     const dir = p => `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
     $('#nmList').innerHTML = rows.length ? rows.map((p, i) => `<article class="nm-card">
         <div class="nm-top"><span class="nm-n">${i + 1}</span><div class="nm-main"><b>${esc(p.name)}</b>
-          <div class="nm-meta"><span class="nm-cat" style="--c:${CAT[p.category].color}">${CAT[p.category].label}</span><span>${km(p.distanceM)} away</span>
+          <div class="nm-meta"><span class="nm-cat" style="--c:${catColor(p.category)}">${esc(p.categoryName)}</span><span>${km(p.distanceM)} away</span>
           ${p.openNow === true ? '<span class="nm-open">Open now</span>' : p.openNow === false ? '<span class="nm-closed">Closed now</span>' : ''}
           ${p.rating ? `<span>★ ${Number(p.rating).toFixed(1)}${p.ratingCount ? ` (${p.ratingCount})` : ''}</span>` : ''}</div></div></div>
         <div class="nm-addr">${esc(p.address) || '<span class="muted">Address not listed</span>'}</div>
         ${p.phone ? `<div class="nm-phone"><a href="tel:${esc(p.phone.replace(/\s+/g, ''))}">${esc(p.phone)}</a></div>` : ''}
         <div class="nm-acts">${p.phone ? `<a class="btn sm" href="tel:${esc(p.phone.replace(/\s+/g, ''))}">Call</a>` : ''}
           <a class="btn sm primary" href="${dir(p)}" target="_blank" rel="noopener">Directions</a>
-          <a class="btn sm" href="${esc(p.mapsUrl)}" target="_blank" rel="noopener">View on map</a></div>
+          <a class="btn sm" href="${esc(p.mapsUrl)}" target="_blank" rel="noopener">View on map</a>
+          ${st.saved?.has(normName(p.name)) ? '<span class="nm-saved">✓ Saved</span>'
+            : `<button type="button" class="btn sm nm-save" data-save="${esc(p.id)}"><svg class="ic"><use href="#i-plus"/></svg>Save</button>`}</div>
       </article>`).join('') : '<div class="card empty">No places match the filter.</div>';
+    // Save → Customer Master: the customer form opens pre-filled so missing details (e.g. mobile) can be added
+    $$('[data-save]', $('#nmList')).forEach(b => b.onclick = () => {
+      const p = d.places.find(x => x.id === b.dataset.save); if (!p) return;
+      customerForm({ name: p.name, mobile: (p.phone || '').replace(/[^\d+]/g, ''), address: p.address || '' }, saved => {
+        (st.saved ||= new Set()).add(normName(saved.name)); draw();
+      });
+    });
   };
   $('#nmQ').oninput = e => { st.filter = e.target.value; draw(); };
   draw();

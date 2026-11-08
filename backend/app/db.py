@@ -193,6 +193,15 @@ SCHEMA = [
         Months INT NULL,
         SortOrder INT NOT NULL DEFAULT 0,
         IsDeleted BIT NOT NULL DEFAULT 0)""",
+    # small per-user editable lists (Near Me categories and distances)
+    """IF OBJECT_ID('dbo.Lookups') IS NULL CREATE TABLE dbo.Lookups(
+        Id INT IDENTITY PRIMARY KEY,
+        UserId INT NOT NULL REFERENCES dbo.Users(Id),
+        Kind NVARCHAR(30) NOT NULL,
+        Name NVARCHAR(100) NOT NULL,
+        Value NVARCHAR(300) NULL,
+        SortOrder INT NOT NULL DEFAULT 0,
+        IsDeleted BIT NOT NULL DEFAULT 0)""",
     """IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Visits_User')
         CREATE INDEX IX_Visits_User ON dbo.Visits(UserId, IsDeleted, VisitDate)""",
 ]
