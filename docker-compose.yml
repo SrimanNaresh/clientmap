@@ -1,0 +1,15 @@
+# T_ClientMap (ClientMap) - Personal Projects
+# Container bound to 127.0.0.1:5130; host nginx terminates TLS for
+# clientmap.thangaminfotech.com with the wildcard cert (see deploy/nginx-clientmap.conf).
+services:
+  app:
+    build: ./backend
+    image: clientmap-app
+    container_name: clientmap-app
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:5130:8000"

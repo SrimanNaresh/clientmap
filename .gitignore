@@ -1,0 +1,8 @@
+backend/.env
+deploy/deploy.env
+backend/data/
+__pycache__/
+.venv/
+backend/.venv/
+.claude/
+*.pyc
