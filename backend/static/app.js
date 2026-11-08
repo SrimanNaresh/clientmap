@@ -122,7 +122,7 @@ const closeDrawer = () => NAV.close();
 
 const ROUTES = {
   '': dashboard, projects, customers, share, route: routeView, visits, visit: visitForm,
-  followups, invoice: invoiceView, invoices, password: passwordView,
+  followups, invoice: invoiceView, invoices, password: passwordView, voice: voiceView,
 };
 async function router() {
   if ($('#shell').hidden) return;
@@ -1085,6 +1085,134 @@ async function passwordView() {
     try { await api('POST', '/api/auth/change-password', { current: f.current.value, new: f.new.value }); toast('Password updated'); f.reset(); }
     catch (err) { toast(err.message, true); }
   };
+}
+
+// ------------------------------------------------------------ voice to text (Tamil)
+const TAMIL_PROMPT = 'Convert the provided English speech or text into natural, accurate Tamil. Preserve the original meaning and tone. Keep each sentence as a separate bullet point, retain names and numbers, and output only the Tamil translation.';
+// One sentence per bullet line; existing bullet markers are replaced.
+const toBullets = text => String(text || '').split(/(?<=[.!?।])\s+|\n+/)
+  .map(s => s.replace(/^\s*(?:[•\-*·▪●]|\d+[.)])\s*/, '').trim()).filter(Boolean).map(s => `• ${s}`).join('\n');
+
+async function voiceView() {
+  title('Voice to Text');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  view.innerHTML = `<div class="toolbar"><h2 class="grow">Voice to Text</h2></div>
+  <div class="vt-msg" id="vtMsg" role="status" aria-live="polite" hidden></div>
+  <div class="vt-grid">
+    <section class="card grid vt-rec" aria-labelledby="vtRecH">
+      <div class="vt-head"><b id="vtRecH">Record speech</b>
+        <label class="vt-lang">Spoken language<select id="vtLang"><option value="ta-IN">Tamil (தமிழ்)</option><option value="en-IN">English</option></select></label></div>
+      <div class="vt-ctrls">
+        <button type="button" class="btn primary vt-start" id="vtStart"><svg class="ic"><use href="#i-mic"/></svg>Start</button>
+        <button type="button" class="btn danger vt-stop" id="vtStop" disabled><svg class="ic"><use href="#i-stop"/></svg>Stop</button>
+        <div class="vt-state" id="vtState" data-s="idle"><i></i><span id="vtStateTxt">Ready</span><b id="vtTimer">00:00</b></div>
+      </div>
+      <div class="vt-live muted" id="vtLive" hidden></div>
+      ${SR ? '' : '<p class="vt-msg err">Voice recording isn’t supported in this browser. Use Chrome, Edge or Safari, or type English text below.</p>'}
+      <label>Transcript<textarea id="vtTranscript" rows="7" placeholder="Your speech appears here after you press Stop. You can edit it."></textarea></label>
+      <div class="row-actions"><button type="button" class="btn" id="vtTrTranscript">Translate transcript</button></div>
+    </section>
+    <section class="card grid" aria-labelledby="vtEnH">
+      <b id="vtEnH">Type or paste English text</b>
+      <label class="sr-only" for="vtEnglish">English text</label>
+      <textarea id="vtEnglish" rows="6" placeholder="Type or paste English text here…"></textarea>
+      <div class="row-actions"><button type="button" class="btn primary" id="vtTrEnglish">Translate to Tamil</button></div>
+    </section>
+    <section class="card grid vt-out" aria-labelledby="vtTaH">
+      <div class="vt-head"><b id="vtTaH">Tamil Translation</b>
+        <div class="row-actions"><button type="button" class="btn sm" id="vtCopy">Copy</button><button type="button" class="btn sm" id="vtPrompt">Download Prompt</button></div></div>
+      <label class="sr-only" for="vtTamil">Tamil Translation</label>
+      <textarea id="vtTamil" rows="9" lang="ta" placeholder="The Tamil translation appears here. You can edit it."></textarea>
+    </section>
+  </div>`;
+
+  const startBtn = $('#vtStart'), stopBtn = $('#vtStop'), state = $('#vtState'), stateTxt = $('#vtStateTxt'), timerEl = $('#vtTimer');
+  const live = $('#vtLive'), msgEl = $('#vtMsg'), transcript = $('#vtTranscript'), tamil = $('#vtTamil');
+  const msg = (text, kind = '') => { msgEl.hidden = !text; msgEl.textContent = text || ''; msgEl.className = `vt-msg ${kind}`; };
+  const setState = (s, text) => { state.dataset.s = s; stateTxt.textContent = text; };
+
+  let rec = null, stream = null, recording = false, finals = [], t0 = 0, tick = null, busy = false;
+  const fmt = ms => { const s = Math.floor(ms / 1000); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
+  const stopMedia = () => { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } clearInterval(tick); tick = null; };
+
+  const translate = async (text, label) => {
+    if (busy) return;
+    if (!text.trim()) return msg('Enter or record some text first.', 'err');
+    busy = true; [$('#vtTrTranscript'), $('#vtTrEnglish')].forEach(b => b.disabled = true);
+    msg(`Translating ${label} to Tamil…`, 'busy');
+    try {
+      const r = await api('POST', '/api/voice/translate', { text });
+      tamil.value = r.translation; msg('Translation ready. You can edit it.', 'ok');
+    } catch (e) { msg(`Translation failed: ${e.message}`, 'err'); }
+    finally { busy = false; [$('#vtTrTranscript'), $('#vtTrEnglish')].forEach(b => b.disabled = false); }
+  };
+
+  const finish = () => {
+    stopMedia(); rec = null;
+    startBtn.disabled = false; stopBtn.disabled = true; live.hidden = true; $('#vtLang').disabled = false;
+    const text = finals.join('\n').trim();
+    if (!text) { setState('idle', 'Ready'); return msg('No speech was detected. Check your microphone and try again, speaking a little louder.', 'err'); }
+    setState('done', 'Transcribed');
+    transcript.value = toBullets(text);
+    if ($('#vtLang').value.startsWith('ta')) { tamil.value = transcript.value; msg('Transcript ready. The speech was already in Tamil, so it is copied to the Tamil Translation.', 'ok'); }
+    else translate(transcript.value, 'the transcript');
+  };
+
+  const start = async () => {
+    if (!SR) return msg('Voice recording isn’t supported in this browser. Use Chrome, Edge or Safari.', 'err');
+    msg('Asking for microphone permission…', 'busy');
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) {
+      setState('idle', 'Ready');
+      return msg(e.name === 'NotAllowedError' || e.name === 'SecurityError'
+        ? 'Microphone access was denied. Allow the microphone for this site in your browser settings, then press Start again.'
+        : e.name === 'NotFoundError' ? 'No microphone was found on this device.' : `Could not start the microphone: ${e.message}`, 'err');
+    }
+    finals = []; recording = true; msg('');
+    rec = new SR(); rec.lang = $('#vtLang').value; rec.continuous = true; rec.interimResults = true;
+    rec.onresult = e => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finals.push(r[0].transcript.trim()); else interim += r[0].transcript;
+      }
+      live.hidden = !interim; live.textContent = interim ? `Hearing: ${interim}` : '';
+    };
+    rec.onerror = e => {
+      if (e.error === 'no-speech' || e.error === 'aborted') return;
+      recording = false;
+      msg(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? 'Microphone access was denied. Allow the microphone for this site, then press Start again.'
+        : e.error === 'network' ? 'Speech recognition needs an internet connection. Check your connection and try again.'
+        : `Speech recognition stopped: ${e.error}`, 'err');
+    };
+    // Browsers end recognition after a pause; keep listening until Stop is pressed.
+    rec.onend = () => { if (recording) { try { rec.start(); return; } catch { /* fall through */ } } finish(); };
+    try { rec.start(); } catch (e) { recording = false; stopMedia(); return msg(`Could not start recording: ${e.message}`, 'err'); }
+    t0 = Date.now(); timerEl.textContent = '00:00'; tick = setInterval(() => timerEl.textContent = fmt(Date.now() - t0), 500);
+    startBtn.disabled = true; stopBtn.disabled = false; $('#vtLang').disabled = true;
+    setState('rec', 'Recording…');
+  };
+  const stop = () => {
+    if (!rec) return;
+    recording = false; stopBtn.disabled = true; setState('busy', 'Transcribing…'); msg('Transcribing your speech…', 'busy');
+    try { rec.stop(); } catch { finish(); }
+  };
+
+  startBtn.onclick = start; stopBtn.onclick = stop;
+  $('#vtTrTranscript').onclick = () => translate(transcript.value, 'the transcript');
+  $('#vtTrEnglish').onclick = () => translate($('#vtEnglish').value, 'your text');
+  $('#vtCopy').onclick = async () => {
+    if (!tamil.value.trim()) return msg('There is no translation to copy yet.', 'err');
+    try { await navigator.clipboard.writeText(tamil.value); toast('Tamil translation copied'); } catch { tamil.select(); toast('Press Ctrl+C to copy'); }
+  };
+  $('#vtPrompt').onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([TAMIL_PROMPT + '\n'], { type: 'text/plain;charset=utf-8' }));
+    a.download = 'tamil-translation-prompt.txt'; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  // leaving the screen stops the microphone
+  cleanup = () => { recording = false; if (rec) { rec.onend = null; try { rec.abort(); } catch { /* ignore */ } } stopMedia(); };
 }
 
 boot();

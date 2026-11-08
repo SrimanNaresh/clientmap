@@ -562,6 +562,17 @@ class TranslateIn(BaseModel):
     target: str = "ta"
 
 
+def _gtx_translate(text: str, target: str = "ta") -> str:
+    """Google's free web translator (no key). Line breaks in the input are kept in the output."""
+    r = httpx.get(
+        "https://translate.googleapis.com/translate_a/single",
+        params={"client": "gtx", "sl": "auto", "tl": target, "dt": "t", "q": text},
+        timeout=15,
+    )
+    r.raise_for_status()
+    return "".join(seg[0] for seg in r.json()[0] if seg and seg[0])
+
+
 @app.post("/api/translate")
 def translate(body: TranslateIn, uid: int = Depends(current_user)):
     text = body.text.strip()
@@ -571,13 +582,7 @@ def translate(body: TranslateIn, uid: int = Depends(current_user)):
         raise HTTPException(400, "Text too long")
     target = "ta" if body.target not in ("ta", "en") else body.target
     try:
-        r = httpx.get(
-            "https://translate.googleapis.com/translate_a/single",
-            params={"client": "gtx", "sl": "auto", "tl": target, "dt": "t", "q": text},
-            timeout=15,
-        )
-        r.raise_for_status()
-        return {"text": "".join(seg[0] for seg in r.json()[0] if seg and seg[0])}
+        return {"text": _gtx_translate(text, target)}
     except Exception:
         raise HTTPException(502, "Translation service is not available right now")
 
@@ -1028,6 +1033,120 @@ def rename_package(pid: int, body: PackageIn, uid: int = Depends(current_user)):
 def remove_package(pid: int, uid: int = Depends(current_user)):
     db.execute("UPDATE Packages SET IsDeleted=1 WHERE Id=%s AND UserId=%s", (pid, uid))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- voice to text: Tamil translation
+# Speech recognition runs in the browser; translation runs here so no API key ever reaches the page.
+# Provider order: Claude (ANTHROPIC_API_KEY) -> Google Cloud Translation (GOOGLE_TRANSLATE_API_KEY)
+# -> Google's free web translator (no key, same one the visit notes "Convert to Tamil" uses).
+TAMIL_PROMPT = (
+    "Convert the provided English speech or text into natural, accurate Tamil. Preserve the original meaning "
+    "and tone. Keep each sentence as a separate bullet point, retain names and numbers, and output only the "
+    "Tamil translation."
+)
+TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "claude-opus-5-5")
+TRANSLATE_MAX_CHARS = 6000
+TRANSLATE_MAX_PER_DAY = int(os.environ.get("TRANSLATE_MAX_PER_DAY", "300"))
+_translate_hits: dict = defaultdict(deque)
+_anthropic_client = None
+
+
+class VoiceTranslateIn(BaseModel):
+    text: str
+
+
+_SENT_SPLIT = re.compile(r"(?<=[.!?।])\s+|\n+")
+_BULLET = re.compile(r"^\s*(?:[•\-*·▪●]|\d+[.)])\s*")
+
+
+def split_sentences(text: str) -> list:
+    """One sentence per item; existing bullet markers are dropped."""
+    out = []
+    for part in _SENT_SPLIT.split(text or ""):
+        part = _BULLET.sub("", part).strip()
+        if part:
+            out.append(part)
+    return out
+
+
+def _bullets(lines: list) -> str:
+    return "\n".join(f"• {s}" for s in lines)
+
+
+def _translate_claude(sentences: list) -> list:
+    global _anthropic_client
+    import anthropic
+
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.Anthropic(timeout=90.0)
+    resp = _anthropic_client.beta.messages.create(
+        model=TRANSLATE_MODEL,
+        max_tokens=16000,
+        system=TAMIL_PROMPT,
+        output_config={"effort": "low"},
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",
+        messages=[{"role": "user", "content": _bullets(sentences)}],
+    )
+    if resp.stop_reason == "refusal":
+        raise HTTPException(422, "The translation service declined this text")
+    text = "\n".join(b.text for b in resp.content if b.type == "text")
+    lines = [_BULLET.sub("", ln).strip() for ln in text.splitlines()]
+    return [ln for ln in lines if ln]
+
+
+def _translate_google(sentences: list, key: str) -> list:
+    r = httpx.post(
+        "https://translation.googleapis.com/language/translate/v2",
+        params={"key": key}, json={"q": sentences, "target": "ta", "format": "text"}, timeout=30,
+    )
+    if r.status_code != 200:
+        try:
+            why = r.json()["error"]["message"]
+        except Exception:
+            why = f"HTTP {r.status_code}"
+        print("google translate failed:", why[:300])
+        raise HTTPException(502, "Google Translate rejected the request - check GOOGLE_TRANSLATE_API_KEY on the server")
+    import html as _html
+    return [_html.unescape(t["translatedText"]) for t in r.json()["data"]["translations"]]
+
+
+def _voice_provider() -> str:
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "claude"
+    return "google" if os.environ.get("GOOGLE_TRANSLATE_API_KEY") else "google-free"
+
+
+@app.post("/api/voice/translate")
+def voice_translate(body: VoiceTranslateIn, uid: int = Depends(current_user)):
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Nothing to translate")
+    if len(text) > TRANSLATE_MAX_CHARS:
+        raise HTTPException(400, f"Text is too long (max {TRANSLATE_MAX_CHARS} characters)")
+    now = time.time()
+    q = _translate_hits[uid]
+    while q and now - q[0] > 86400:
+        q.popleft()
+    if len(q) >= TRANSLATE_MAX_PER_DAY:
+        raise HTTPException(429, "Daily translation limit reached")
+    q.append(now)
+
+    sentences = split_sentences(text)
+    provider = _voice_provider()
+    try:
+        if provider == "claude":
+            lines = _translate_claude(sentences)
+        elif provider == "google":
+            lines = _translate_google(sentences, os.environ["GOOGLE_TRANSLATE_API_KEY"])
+        else:
+            lines = [ln.strip() for ln in _gtx_translate("\n".join(sentences)).splitlines() if ln.strip()]
+    except HTTPException:
+        raise
+    except Exception as e:  # network / provider errors -> readable message, details in the log
+        print("translate failed:", type(e).__name__, str(e)[:300])
+        raise HTTPException(502, "Translation failed, please try again")
+    return {"translation": _bullets(lines), "provider": provider}
 
 
 # ---------------------------------------------------------------- durations (customer contract length)

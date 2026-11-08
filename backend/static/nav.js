@@ -24,16 +24,17 @@
       { key: 'invoice', label: 'Invoice', to: '#/invoice' },
       { key: 'invoices', label: 'Saved Invoices', to: '#/invoices' },
     ] },
+    { group: 'Tools', items: [{ key: 'voice', label: 'Voice to Text', to: '#/voice' }] },
     { group: 'Settings', items: [{ key: 'password', label: 'Change Password', to: '#/password' }] },
   ];
   // One colour per main menu: used by the phone menu and every page header.
-  const MENU_TONE_OF = { Dashboard: 'brand', Master: 'violet', 'Field Work': 'teal', Invoice: 'amber', Settings: 'slate' };
+  const MENU_TONE_OF = { Dashboard: 'brand', Master: 'violet', 'Field Work': 'teal', Invoice: 'amber', Tools: 'sky', Settings: 'slate' };
   // label / key → sprite icon
   const ICON = {
-    Dashboard: 'i-dash', Master: 'i-box', 'Field Work': 'i-compass', Invoice: 'i-receipt', Settings: 'i-settings',
+    Dashboard: 'i-dash', Master: 'i-box', 'Field Work': 'i-compass', Invoice: 'i-receipt', Tools: 'i-mic', Settings: 'i-settings',
     Outreach: 'i-send', 'Visit Details': 'i-clip',
     dashboard: 'i-dash', projects: 'i-box', customers: 'i-users', share: 'i-share', route: 'i-route',
-    visits: 'i-pin', followups: 'i-cal', invoice: 'i-file', invoices: 'i-archive', password: 'i-key',
+    visits: 'i-pin', followups: 'i-cal', invoice: 'i-file', invoices: 'i-archive', password: 'i-key', voice: 'i-mic',
   };
   const CARD_GRADS = ['g-blue', 'g-teal', 'g-violet', 'g-amber', 'g-rose', 'g-sky', 'g-emerald'];
 
