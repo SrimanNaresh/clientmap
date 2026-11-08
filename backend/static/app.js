@@ -374,7 +374,7 @@ async function share() {
   title('Project Share');
   const [cs, ps] = await Promise.all([api('GET', '/api/customers'), api('GET', '/api/projects')]);
   view.innerHTML = `<h2>Project Share</h2>
-  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:start">
+  <div class="grid share-grid">
     <div class="card grid">
       <div style="display:flex;gap:.5rem;align-items:end">
         <label style="flex:1">Customer *<select id="cust"><option value="">— Select customer —</option>${cs.map(c => `<option value="${c.id}">${esc(c.name)} · ${esc(c.mobile)}</option>`).join('')}</select></label>
@@ -382,7 +382,7 @@ async function share() {
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center"><b>Projects</b><label style="display:flex;gap:.4rem;align-items:center;font-weight:500"><input type="checkbox" id="all"> Select all</label></div>
       <div class="pick-list">${ps.length ? ps.map(p => `<label class="pick"><input type="checkbox" data-p="${p.id}">
-        <div><div><b>${esc(p.name)}</b></div><div class="muted" style="font-size:.85rem">${esc(p.websiteUrl || 'No website')}</div>
+        <div><div class="pick-name">${esc(p.name)}</div><div class="muted pick-url">${esc(p.websiteUrl || 'No website')}</div>
         ${p.hasAttachment ? `<div class="sub"><input type="checkbox" data-att="${p.id}"> Include attachment: <i>${esc(p.attachmentName)}</i></div>` : ''}</div></label>`).join('') : '<div class="empty">No projects. Add them in Project Master.</div>'}</div>
       <button class="btn wa block" id="send">&#128172; Send via WhatsApp</button>
       <p class="muted" style="margin:0;font-size:.82rem">Attachment links expire after 24 hours. Sender mobile ${esc(CFG.senderMobile)} is included in the message.</p>
@@ -883,8 +883,8 @@ async function invoiceView(id, action) {
       <div class="form-grid">
         <div class="full">
           <label>Bill To — customer / clinic *</label>
-          <div style="display:flex;gap:.4rem;margin-top:.25rem">
-            <div class="picker" style="flex:1"><input id="cq" autocomplete="off" placeholder="Search customer or clinic by name, mobile, contact person…" value="${esc(inv.clinic?.name)}"><div class="picker-list" id="cl" hidden></div></div>
+          <div class="billto-row">
+            <div class="picker"><input id="cq" autocomplete="off" placeholder="Search customer or clinic by name, mobile, contact person…" value="${esc(inv.clinic?.name)}"><div class="picker-list" id="cl" hidden></div></div>
             <button type="button" class="btn" id="addClinic">+ Add customer</button>
             <button type="button" class="btn" id="editClinic" ${inv.clinic?.id || inv.clinic?.customerId ? '' : 'hidden'}>Edit</button>
           </div>

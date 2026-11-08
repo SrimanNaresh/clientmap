@@ -185,7 +185,7 @@ input[type=file]{padding:.25rem}
 .gp-search{margin:0 0 0 auto;position:relative;width:200px;max-width:45%}
 .gp-search .ic{position:absolute;left:.55rem;top:50%;transform:translateY(-50%);width:14px;height:14px;color:var(--ink-400)}
 .gp-search input{margin:0;padding-left:1.8rem;min-height:28px}
-.gp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(136px,1fr));gap:.6rem;padding:.8rem}
+.gp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(136px,100%),1fr));gap:.6rem;padding:.8rem}
 .gp-card{position:relative;border:1px solid var(--ink-100);border-radius:.75rem;padding:.75rem .6rem .5rem;background:#fff;overflow:hidden}
 .gp-edge{position:absolute;left:0;right:0;top:0;height:2px}
 .gp-title{display:flex;align-items:center;gap:.5rem;font-weight:700;font-size:.7222rem;color:var(--ink-800);margin-bottom:.35rem}
@@ -274,8 +274,8 @@ body:has([data-phone-footer]) [data-fab-spacer]{display:none}
 .dur-list{display:grid;gap:6px}
 .dur-row{display:grid;grid-template-columns:1fr 84px auto auto;gap:6px;align-items:center}
 .dur-row.dur-add{grid-template-columns:1fr 84px auto;border-top:1px dashed var(--line,#e2e8f0);padding-top:8px}
-@media (max-width:520px){.dur-row{grid-template-columns:1fr 70px}.dur-row .btn{width:100%}.dur-row.dur-add{grid-template-columns:1fr 70px}.dur-row.dur-add .btn{grid-column:1/-1}}
-.form-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+@media (max-width:520px){.dur-row{grid-template-columns:minmax(0,1fr) 54px auto auto;gap:4px}.dur-row.dur-add{grid-template-columns:minmax(0,1fr) 54px auto}.dur-row input{padding-left:.45rem;padding-right:.35rem}.dur-row .btn.sm{padding:.3rem .5rem;font-size:.65rem}}
+.form-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr))}
 .form-grid .full{grid-column:1/-1}
 .row-actions{display:flex;gap:.4rem;flex-wrap:wrap}
 .empty{padding:28px;text-align:center;color:var(--ink-400)}
@@ -289,7 +289,7 @@ body:has([data-phone-footer]) [data-fab-spacer]{display:none}
 @keyframes slide-in{0%{opacity:0;transform:translateX(-8px)}100%{opacity:1;transform:none}}
 
 /* dashboard */
-.proj-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
+.proj-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(min(230px,100%),1fr))}
 .proj-card{background:#fff;border:1px solid rgba(236,238,242,.8);border-radius:1rem;box-shadow:var(--shadow-card);padding:12px 14px;height:122px;display:grid;grid-template-rows:auto auto auto;align-content:space-between;min-width:0;transition:transform .15s,box-shadow .15s}
 .proj-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-elevated)}
 .pc-row{display:flex;align-items:center;gap:.6rem;min-width:0}
@@ -312,8 +312,14 @@ table.list tbody tr:hover{background:rgba(238,244,255,.5)}
 .card.table-wrap{overflow:hidden;overflow-x:auto}
 @media(max-width:720px){
   table.list.stack thead{display:none}
+  table.list.stack,table.list.stack tbody,table.list.stack tfoot{display:block;width:100%}
   table.list.stack tr{display:block;border:1px solid var(--ink-100);border-radius:12px;margin:8px;padding:6px 4px;background:#fff}
-  table.list.stack td{display:flex;gap:.6rem;border:0;padding:.3rem .6rem}
+  /* cards never scroll sideways: long names, URLs and addresses wrap inside the card */
+  /* label in a fixed left column; every value stacks in the right column. Long names, URLs and addresses wrap. */
+  table.list.stack td{display:grid;grid-template-columns:96px minmax(0,1fr);column-gap:.6rem;row-gap:.25rem;align-items:start;border:0;padding:.3rem .6rem;max-width:none!important;min-width:0;overflow-wrap:anywhere;word-break:break-word}
+  table.list.stack td::before{grid-column:1;grid-row:1}
+  table.list.stack td>*{grid-column:2;min-width:0;justify-self:start;max-width:100%}
+  table.list.stack td{text-align:left!important}
   table.list.stack td::before{content:attr(data-l);flex:0 0 96px;font-size:.6667rem;color:var(--ink-400);font-weight:600}
   table.list.stack td.actions::before{content:""}
 }
@@ -336,13 +342,18 @@ table.list tbody tr:hover{background:rgba(238,244,255,.5)}
 .pick{display:flex;gap:.7rem;align-items:flex-start;padding:10px;border:1px solid var(--ink-100);border-radius:12px;background:#fff;transition:border-color .15s,background .15s}
 .pick:hover{border-color:var(--brand-200);background:rgba(238,244,255,.35)}
 .pick .sub{display:flex;gap:.4rem;align-items:center;font-weight:400;margin-top:.35rem;color:var(--ink-600)}
+.pick>div{flex:1;min-width:0}
+.pick .sub{flex-wrap:wrap}
+.pick .sub i{overflow-wrap:anywhere;min-width:0}
+.pick-name{font-weight:700;font-size:.8333rem;color:var(--ink-800)}
+.pick-url{font-size:.7222rem;overflow-wrap:anywhere}
 .msg-preview{white-space:pre-wrap;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:12px;font-size:.75rem}
 
 /* visits */
 .visit-card{background:#fff;border:1px solid rgba(236,238,242,.8);border-radius:1rem;padding:12px 14px;display:grid;gap:.3rem;box-shadow:var(--shadow-card)}
 .visit-card .top{display:flex;justify-content:space-between;gap:.5rem;align-items:flex-start}
 .visit-card .meta{font-size:.7222rem;color:var(--ink-500)}
-.visit-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.visit-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr))}
 @media(max-width:400px){.visit-grid{grid-template-columns:1fr}}
 .voice-bar{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-top:.4rem}
 .rec{background:#fee2e2!important;border-color:#fca5a5!important;color:#b91c1c!important}
@@ -516,3 +527,12 @@ table.list tbody tr:hover{background:rgba(238,244,255,.5)}
 }
 #printRoot{display:none}
 .end-hint{font-weight:400;font-size:.85em}
+/* phone-safe layout: grid/flex children may shrink, long values wrap instead of widening the page */
+.share-grid{grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));align-items:start}
+.grid>*,.form-grid>*,.form-2>*,.dur-field>label{min-width:0}
+select{max-width:100%;text-overflow:ellipsis}
+label{min-width:0}
+.pick-list,.card{overflow-wrap:break-word}
+.billto-row{display:flex;gap:.4rem;margin-top:.25rem}
+.billto-row .picker{flex:1;min-width:0}
+@media(max-width:560px){.billto-row{flex-wrap:wrap}.billto-row .picker{flex:1 0 100%}.billto-row .btn{flex:1}}
