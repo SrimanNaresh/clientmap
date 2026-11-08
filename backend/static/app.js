@@ -121,7 +121,7 @@ $$('[data-logout]').forEach(b => b.addEventListener('click', async () => {
 const closeDrawer = () => NAV.close();
 
 const ROUTES = {
-  '': dashboard, projects, customers, share, route: routeView, visits, visit: visitForm,
+  '': dashboard, projects, customers, share, route: routeView, near: nearView, visits, visit: visitForm,
   followups, invoice: invoiceView, invoices, password: passwordView, voice: voiceView,
 };
 async function router() {
@@ -424,6 +424,94 @@ function loadMaps() {
   });
   return mapsPromise;
 }
+// ------------------------------------------------------------ near me (pharmacies / labs around the current location)
+let nearState = null;   // kept while the app is open, so going back shows the last results
+async function nearView() {
+  title('Near Me');
+  const st = nearState || { loc: null, category: 'all', radiusM: 2000, data: null, filter: '' };
+  nearState = st;
+  view.innerHTML = `<div class="toolbar"><h2 class="grow">Near Me</h2></div>
+  <div class="card grid nm-form">
+    <div class="nm-loc">
+      <button type="button" class="btn" id="nmLocate"><svg class="ic"><use href="#i-locate"/></svg>Get current location</button>
+      <div class="nm-loc-txt" id="nmLocTxt"></div>
+    </div>
+    <div class="nm-row">
+      <label>Category<select id="nmCat"><option value="all">All</option><option value="pharmacy">Pharmacy</option><option value="lab">Lab</option></select></label>
+      <label>Within<select id="nmRad"><option value="1000">1 km</option><option value="2000">2 km</option><option value="5000">5 km</option><option value="10000">10 km</option></select></label>
+      <button type="button" class="btn primary nm-go" id="nmGo"><svg class="ic"><use href="#i-search"/></svg>Search</button>
+    </div>
+    ${CFG.routeProvider === 'osm' ? '<p class="muted nm-note">Using free OpenStreetMap data, so phone numbers and opening hours are often missing.</p>' : ''}
+  </div>
+  <div id="nmRes"></div>`;
+  const locTxt = $('#nmLocTxt'), go = $('#nmGo');
+  $('#nmCat').value = st.category; $('#nmRad').value = String(st.radiusM);
+  const showLoc = () => {
+    locTxt.className = 'nm-loc-txt' + (st.loc ? ' ok' : '');
+    locTxt.textContent = st.loc ? `Location found: ${st.loc.lat.toFixed(5)}, ${st.loc.lng.toFixed(5)} (±${Math.round(st.loc.acc)} m)` : 'Tap “Get current location” first.';
+  };
+  showLoc();
+
+  const locate = () => new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error('This browser cannot share your location.'));
+    navigator.geolocation.getCurrentPosition(
+      p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy }),
+      e => reject(new Error(e.code === 1 ? 'Location access was denied. Allow location for this site in your browser settings, then try again.'
+        : e.code === 3 ? 'Getting your location took too long. Move to an open area and try again.'
+        : 'Your location is not available right now. Turn on GPS / location services and try again.')),
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 60000 });
+  });
+  $('#nmLocate').onclick = async () => {
+    const b = $('#nmLocate'); b.disabled = true; locTxt.className = 'nm-loc-txt'; locTxt.textContent = 'Finding your location…';
+    try { st.loc = await locate(); showLoc(); }
+    catch (e) { locTxt.className = 'nm-loc-txt err'; locTxt.textContent = e.message; }
+    finally { b.disabled = false; }
+  };
+
+  go.onclick = async () => {
+    st.category = $('#nmCat').value; st.radiusM = Number($('#nmRad').value);
+    if (!st.loc) {   // no location yet: get it first, then search
+      go.disabled = true; locTxt.className = 'nm-loc-txt'; locTxt.textContent = 'Finding your location…';
+      try { st.loc = await locate(); showLoc(); } catch (e) { locTxt.className = 'nm-loc-txt err'; locTxt.textContent = e.message; go.disabled = false; return; }
+    }
+    go.disabled = true; go.lastChild.textContent = 'Searching…';
+    $('#nmRes').innerHTML = '<div class="card empty">Searching nearby…</div>';
+    try {
+      st.data = await api('POST', '/api/nearby', { lat: st.loc.lat, lng: st.loc.lng, category: st.category, radiusM: st.radiusM });
+      st.filter = ''; drawNear();
+    } catch (e) { $('#nmRes').innerHTML = ''; toast(e.message, true); }
+    finally { go.disabled = false; go.lastChild.textContent = 'Search'; }
+  };
+  if (st.data) drawNear();
+}
+function drawNear() {
+  const st = nearState, d = st.data, res = $('#nmRes'); if (!res) return;
+  const counts = d.places.reduce((a, p) => (a[p.category] = (a[p.category] || 0) + 1, a), {});
+  const summary = Object.entries(counts).map(([c, n]) => `${n} ${CAT[c].label.toLowerCase()}${n > 1 ? (c === 'pharmacy' ? 'ies' : 's') : ''}`.replace('pharmacyies', 'pharmacies')).join(' · ');
+  if (!d.places.length) { res.innerHTML = `<div class="card empty">No ${st.category === 'all' ? 'pharmacies or labs' : CAT[st.category].label.toLowerCase() + 's'} found within ${km(d.radiusM)}. Try a wider distance.</div>`; return; }
+  res.innerHTML = `<div class="nm-bar"><b>${d.places.length} places within ${km(d.radiusM)}</b><span class="muted">${summary}</span>
+      <input id="nmQ" placeholder="Filter by name or area…" value="${esc(st.filter)}"></div>
+    <div class="nm-list" id="nmList"></div>`;
+  const draw = () => {
+    const q = st.filter.toLowerCase();
+    const rows = d.places.filter(p => !q || `${p.name} ${p.address}`.toLowerCase().includes(q));
+    const dir = p => `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
+    $('#nmList').innerHTML = rows.length ? rows.map((p, i) => `<article class="nm-card">
+        <div class="nm-top"><span class="nm-n">${i + 1}</span><div class="nm-main"><b>${esc(p.name)}</b>
+          <div class="nm-meta"><span class="nm-cat" style="--c:${CAT[p.category].color}">${CAT[p.category].label}</span><span>${km(p.distanceM)} away</span>
+          ${p.openNow === true ? '<span class="nm-open">Open now</span>' : p.openNow === false ? '<span class="nm-closed">Closed now</span>' : ''}
+          ${p.rating ? `<span>★ ${Number(p.rating).toFixed(1)}${p.ratingCount ? ` (${p.ratingCount})` : ''}</span>` : ''}</div></div></div>
+        <div class="nm-addr">${esc(p.address) || '<span class="muted">Address not listed</span>'}</div>
+        ${p.phone ? `<div class="nm-phone"><a href="tel:${esc(p.phone.replace(/\s+/g, ''))}">${esc(p.phone)}</a></div>` : ''}
+        <div class="nm-acts">${p.phone ? `<a class="btn sm" href="tel:${esc(p.phone.replace(/\s+/g, ''))}">Call</a>` : ''}
+          <a class="btn sm primary" href="${dir(p)}" target="_blank" rel="noopener">Directions</a>
+          <a class="btn sm" href="${esc(p.mapsUrl)}" target="_blank" rel="noopener">View on map</a></div>
+      </article>`).join('') : '<div class="card empty">No places match the filter.</div>';
+  };
+  $('#nmQ').oninput = e => { st.filter = e.target.value; draw(); };
+  draw();
+}
+
 async function routeView() {
   title('Client Route');
   const st = routeState?.form || { origin: '', destination: '', category: 'all' };

@@ -568,3 +568,31 @@ label{min-width:0}
 .vt-rec .vt-msg{margin:0;position:static;box-shadow:none}
 @media(max-width:560px){.vt-state{margin-left:0;width:100%;justify-content:center}.vt-ctrls .btn{flex:1}.vt-lang{width:100%}.vt-lang select{flex:1}}
 @media(prefers-reduced-motion:reduce){.vt-state[data-s="rec"] i{animation:none}}
+
+/* ---------------- near me */
+.nm-form{max-width:900px}
+.nm-loc{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.nm-loc .btn,.nm-go{display:inline-flex;align-items:center;gap:.4rem;justify-content:center}
+.nm-loc-txt{font-size:.75rem;color:var(--ink-500)}
+.nm-loc-txt.ok{color:#047857}
+.nm-loc-txt.err{color:#b91c1c}
+.nm-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) auto;gap:10px;align-items:end}
+.nm-go{min-width:120px;min-height:30px}
+.nm-note{margin:0;font-size:.72rem}
+.nm-bar{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin:14px 0 10px}
+.nm-bar input{margin-left:auto;max-width:260px}
+.nm-list{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr))}
+.nm-card{background:#fff;border:1px solid var(--ink-100);border-radius:14px;padding:12px 14px;box-shadow:var(--shadow-soft);display:grid;gap:6px;overflow-wrap:anywhere}
+.nm-top{display:flex;gap:10px;align-items:flex-start}
+.nm-n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--ink-50);color:var(--ink-600);font-size:.7rem;font-weight:700;display:grid;place-items:center}
+.nm-main{min-width:0}
+.nm-main b{font-size:.8333rem;color:var(--ink-800)}
+.nm-meta{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:.7rem;color:var(--ink-500);margin-top:2px;align-items:center}
+.nm-cat{color:var(--c);font-weight:700}
+.nm-cat::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--c);margin-right:4px}
+.nm-open{color:#047857;font-weight:600}
+.nm-closed{color:#b91c1c;font-weight:600}
+.nm-addr{font-size:.75rem;color:var(--ink-600)}
+.nm-phone{font-size:.75rem}
+.nm-acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+@media(max-width:560px){.nm-row{grid-template-columns:1fr 1fr}.nm-go{grid-column:1/-1;min-height:40px}.nm-loc .btn{width:100%}.nm-bar input{margin-left:0;max-width:none}.nm-acts .btn{flex:1;text-align:center}}

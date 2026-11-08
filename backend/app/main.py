@@ -951,6 +951,126 @@ def _google_route(origin, dest, cats):
 
 
 # ---------------------------------------------------------------- clinics
+# ---------------------------------------------------------------- near me (places around the current location)
+NEARBY_CATS = ("pharmacy", "lab")
+NEARBY_RADII = (1000, 2000, 5000, 10000)
+_nearby_cache: dict = {}
+
+
+class NearbyIn(BaseModel):
+    lat: float
+    lng: float
+    category: str = "all"
+    radiusM: int = 2000
+
+
+def _dist_m(a_lat, a_lng, b_lat, b_lng):
+    r = 6371000.0
+    p1, p2 = math.radians(a_lat), math.radians(b_lat)
+    dp, dl = p2 - p1, math.radians(b_lng - a_lng)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(h))
+
+
+def _box(lat, lng, radius):
+    dlat = radius / 110540
+    dlng = radius / (111320 * max(0.2, math.cos(math.radians(lat))))
+    return lat - dlat, lng - dlng, lat + dlat, lng + dlng
+
+
+def _google_nearby(lat, lng, radius, cats):
+    la1, lo1, la2, lo2 = _box(lat, lng, radius)
+    seen, out = set(), []
+    for c in cats:
+        meta = CATEGORIES[c]
+        req = {
+            "textQuery": meta["query"], "pageSize": 20, "regionCode": "IN", "rankPreference": "DISTANCE",
+            "locationRestriction": {"rectangle": {"low": {"latitude": la1, "longitude": lo1}, "high": {"latitude": la2, "longitude": lo2}}},
+        }
+        if meta["type"]:
+            req["includedType"] = meta["type"]
+        pr = _g_post(
+            "https://places.googleapis.com/v1/places:searchText", req,
+            "places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,"
+            "places.nationalPhoneNumber,places.rating,places.userRatingCount,places.currentOpeningHours.openNow,places.businessStatus",
+        )
+        for p in pr.get("places", []):
+            if p["id"] in seen or "location" not in p or p.get("businessStatus") == "CLOSED_PERMANENTLY":
+                continue
+            seen.add(p["id"])
+            loc = p["location"]
+            out.append({
+                "id": p["id"], "name": p.get("displayName", {}).get("text", ""), "category": c,
+                "address": p.get("formattedAddress", ""), "lat": loc["latitude"], "lng": loc["longitude"],
+                "phone": p.get("nationalPhoneNumber", ""), "rating": p.get("rating"), "ratingCount": p.get("userRatingCount"),
+                "openNow": (p.get("currentOpeningHours") or {}).get("openNow"), "mapsUrl": p.get("googleMapsUri"),
+            })
+    return out
+
+
+def _osm_nearby(lat, lng, radius, cats):
+    box = _box(lat, lng, radius)
+    data = _photon_places([box], cats)
+    if data is None:
+        data = _overpass_places([box], cats)
+    if data is None:
+        raise HTTPException(502, "The places service is busy. Please search again in a minute.")
+    seen, out = set(), []
+    for el in data.get("elements", []):
+        tags = el.get("tags", {})
+        name = tags.get("name") or tags.get("name:en")
+        plat = el.get("lat") or el.get("center", {}).get("lat")
+        plng = el.get("lon") or el.get("center", {}).get("lon")
+        cat = _osm_category(tags)
+        if not name or plat is None or cat not in cats:
+            continue
+        k = (name.lower(), round(plat, 4), round(plng, 4))
+        if k in seen:
+            continue
+        seen.add(k)
+        addr = ", ".join(x for x in (
+            " ".join(filter(None, [tags.get("addr:housenumber"), tags.get("addr:street")])),
+            tags.get("addr:suburb") or tags.get("addr:place"), tags.get("addr:city"), tags.get("addr:postcode"),
+        ) if x)
+        out.append({
+            "id": f"osm-{el['type']}-{el['id']}", "name": name, "category": cat, "address": addr,
+            "lat": plat, "lng": plng, "phone": tags.get("phone") or tags.get("contact:phone") or "",
+            "rating": None, "ratingCount": None, "openNow": None,
+            "mapsUrl": f"https://www.google.com/maps/search/?api=1&query={plat},{plng}",
+        })
+    return out
+
+
+@app.post("/api/nearby")
+def nearby(body: NearbyIn, uid: int = Depends(current_user)):
+    if not (-90 <= body.lat <= 90 and -180 <= body.lng <= 180):
+        raise HTTPException(400, "Invalid location")
+    cats = list(NEARBY_CATS) if body.category == "all" else [body.category]
+    if any(c not in NEARBY_CATS for c in cats):
+        raise HTTPException(400, "Unknown category")
+    radius = body.radiusM if body.radiusM in NEARBY_RADII else 2000
+    key = (round(body.lat, 3), round(body.lng, 3), tuple(cats), radius)
+    hit = _nearby_cache.get(key)
+    if hit and time.time() - hit[0] < 1800:
+        return hit[1]
+    q, now = _route_usage[uid], time.time()   # shares the daily search allowance with Client Route
+    while q and now - q[0] > 86400:
+        q.popleft()
+    if len(q) >= ROUTE_MAX_PER_DAY:
+        raise HTTPException(429, "Daily search limit reached")
+    q.append(now)
+
+    places = _google_nearby(body.lat, body.lng, radius, cats) if MAPS_SERVER_KEY else _osm_nearby(body.lat, body.lng, radius, cats)
+    for p in places:
+        p["distanceM"] = round(_dist_m(body.lat, body.lng, p["lat"], p["lng"]))
+    places = sorted((p for p in places if p["distanceM"] <= radius * 1.05), key=lambda p: p["distanceM"])[:60]
+    out = {"provider": "google" if MAPS_SERVER_KEY else "osm", "radiusM": radius, "places": places}
+    _nearby_cache[key] = (time.time(), out)
+    if len(_nearby_cache) > 300:
+        _nearby_cache.pop(next(iter(_nearby_cache)))
+    return out
+
+
 class ClinicIn(BaseModel):
     name: str
     address: Optional[str] = None
