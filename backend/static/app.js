@@ -635,6 +635,23 @@ function drawNear() {
 }
 
 // ------------------------------------------------------------ plan to visit (places saved from Near Me)
+// straight-line distance in metres between two {lat, lng}
+function geoDist(a, b) {
+  const R = 6371000, rad = x => x * Math.PI / 180, dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function getLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error('This browser cannot share your location.'));
+    navigator.geolocation.getCurrentPosition(
+      p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy }),
+      e => reject(new Error(e.code === 1 ? 'Location access was denied. Allow location for this site in your browser settings, then try again.'
+        : e.code === 3 ? 'Getting your location took too long. Move to an open area and try again.'
+        : 'Your location is not available right now. Turn on GPS / location services and try again.')),
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 60000 });
+  });
+}
 let visitPrefill = null;   // set by "Log visit" so the new-visit form opens pre-filled
 const PLAN_ST = ['Planned', 'Visited', 'Skipped'];
 const planState = { status: 'Planned', q: '', sel: new Set() };
@@ -644,11 +661,31 @@ async function planView() {
   let list = await api('GET', '/api/plan');
   view.innerHTML = `<div class="toolbar"><h2 class="grow">Plan to Visit</h2><a class="btn" href="#/near"><svg class="ic"><use href="#i-locate"/></svg>Add from Near Me</a></div>
     <div class="pv-tabs" id="pvTabs" role="tablist"></div>
+    <div class="card nm-loc pv-loc"><button type="button" class="btn" id="pvLocate"><svg class="ic"><use href="#i-locate"/></svg>Get current location</button>
+      <div class="nm-loc-txt" id="pvLocTxt"></div></div>
     <div class="toolbar pv-tools"><input id="pvQ" class="grow" placeholder="Filter by name, area or category…" value="${esc(st.q)}"></div>
     <div class="nm-bulk" id="pvBulk"></div>
     <div class="nm-list" id="pvList"></div>`;
   const today = CFG.today || isoToday();
-  const dir = p => p.lat != null ? `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}` : `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${p.name} ${p.address || ''}`)}`;
+  // current location: shared with Near Me, so a location found there is reused here
+  st.loc ||= nearState?.loc || null;
+  const from = () => st.loc ? `&origin=${st.loc.lat},${st.loc.lng}` : '';
+  const distOf = p => st.loc && p.lat != null ? geoDist(st.loc, p) : null;
+  const dir = p => `https://www.google.com/maps/dir/?api=1${from()}&destination=${p.lat != null ? `${p.lat},${p.lng}` : encodeURIComponent(`${p.name} ${p.address || ''}`)}`;
+  const showLoc = () => {
+    const t = $('#pvLocTxt'), rough = st.loc && st.loc.acc > 1000;
+    t.className = 'nm-loc-txt' + (st.loc ? (rough ? ' warn' : ' ok') : '');
+    t.textContent = !st.loc ? 'Get your location to see how far each place is and sort nearest first.'
+      : rough ? `Approximate location only (±${km(st.loc.acc)}). Distances may be off; use your phone with GPS on for accurate results.`
+      : `Location found: ${st.loc.lat.toFixed(5)}, ${st.loc.lng.toFixed(5)} (±${Math.round(st.loc.acc)} m) · sorted nearest first`;
+  };
+  showLoc();
+  $('#pvLocate').onclick = async () => {
+    const b = $('#pvLocate'), t = $('#pvLocTxt'); b.disabled = true; t.className = 'nm-loc-txt'; t.textContent = 'Finding your location…';
+    try { st.loc = await getLocation(); if (nearState) nearState.loc = st.loc; showLoc(); draw(); }
+    catch (e) { t.className = 'nm-loc-txt err'; t.textContent = e.message; }
+    finally { b.disabled = false; }
+  };
   const tel = p => esc((p.phone || '').replace(/\s+/g, ''));
   let rows = [];
   const reload = async () => { list = await api('GET', '/api/plan'); st.sel = new Set([...st.sel].filter(id => list.some(p => p.id === id))); draw(); };
@@ -679,10 +716,14 @@ async function planView() {
       try { await api('POST', '/api/plan/bulk-delete', { ids: ids() }); toast('Removed'); st.sel.clear(); reload(); } catch (e) { toast(e.message, true); }
     };
     $('#pvRoute').onclick = () => {
-      const pts = rows.filter(p => st.sel.has(p.id) && p.lat != null).slice(0, 10);
-      if (!pts.length) return toast('Selected places have no map location', true);
+      let left = rows.filter(p => st.sel.has(p.id) && p.lat != null);
+      if (!left.length) return toast('Selected places have no map location', true);
+      // from the current location, always go to the nearest remaining stop next
+      const pts = [];
+      if (st.loc) { let cur = st.loc; while (left.length && pts.length < 10) { left.sort((a, b) => geoDist(cur, a) - geoDist(cur, b)); cur = left.shift(); pts.push(cur); } }
+      else pts.push(...left.slice(0, 10));
       const ll = p => `${p.lat},${p.lng}`, last = pts[pts.length - 1], mid = pts.slice(0, -1);
-      window.open(`https://www.google.com/maps/dir/?api=1&destination=${ll(last)}${mid.length ? `&waypoints=${encodeURIComponent(mid.map(ll).join('|'))}` : ''}&travelmode=driving`, '_blank', 'noopener');
+      window.open(`https://www.google.com/maps/dir/?api=1${from()}&destination=${ll(last)}${mid.length ? `&waypoints=${encodeURIComponent(mid.map(ll).join('|'))}` : ''}&travelmode=driving`, '_blank', 'noopener');
       if (st.sel.size > 10) toast('Google Maps takes up to 10 stops; the first 10 were used');
     };
   };
@@ -690,12 +731,14 @@ async function planView() {
     drawTabs();
     const q = st.q.toLowerCase();
     rows = list.filter(p => (st.status === 'All' || p.status === st.status) && (!q || `${p.name} ${p.address || ''} ${p.category || ''}`.toLowerCase().includes(q)));
+    if (st.loc) rows = rows.map(p => [p, distOf(p) ?? Infinity]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
     $('#pvList').innerHTML = rows.length ? rows.map(p => {
-      const d = p.planDate ? String(p.planDate).slice(0, 10) : '', late = p.status === 'Planned' && d && d < today;
+      const d = p.planDate ? String(p.planDate).slice(0, 10) : '', late = p.status === 'Planned' && d && d < today, m = distOf(p);
       return `<article class="nm-card${st.sel.has(p.id) ? ' sel' : ''}">
         <div class="nm-top"><label class="nm-pickbox" title="Select"><input type="checkbox" data-pick="${p.id}" ${st.sel.has(p.id) ? 'checked' : ''} aria-label="Select ${esc(p.name)}"></label>
           <div class="nm-main"><b>${esc(p.name)}</b>
           <div class="nm-meta">${p.category ? `<span class="nm-cat" style="--c:${hashColor(p.category)}">${esc(p.category)}</span>` : ''}
+            ${m != null ? `<span class="pv-dist">${km(m)} away</span>` : ''}
             <span class="chip ${p.status === 'Visited' ? 'ok' : p.status === 'Skipped' ? '' : late ? 'overdue' : 'warn'}">${esc(p.status)}${d ? ` · ${fmtDate(d)}` : ''}${late ? ' · Overdue' : ''}</span>
             ${p.rating ? `<span>★ ${Number(p.rating).toFixed(1)}${p.ratingCount ? ` (${p.ratingCount})` : ''}</span>` : ''}</div></div></div>
         <div class="nm-addr">${esc(p.address) || '<span class="muted">Address not listed</span>'}</div>

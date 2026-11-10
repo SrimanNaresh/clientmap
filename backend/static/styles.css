@@ -633,3 +633,6 @@ label{min-width:0}
 .pv-tab.on{background:#2563eb;border-color:#2563eb;color:#fff}
 .pv-tab.on span{background:rgba(255,255,255,.25)}
 @media(max-width:560px){.nm-date{margin-left:0;width:100%}.nm-bulk{position:static}.nm-bulk .btn{flex:1 1 auto;justify-content:center}}
+.pv-loc{margin-bottom:10px;padding:10px 14px}
+.pv-dist{font-weight:600;color:var(--ink-700)}
+@media(max-width:560px){.pv-loc .btn{width:100%}}
