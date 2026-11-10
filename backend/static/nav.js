@@ -15,6 +15,7 @@
         { key: 'share', label: 'Project Share', to: '#/share' },
         { key: 'route', label: 'Client Route', to: '#/route' },
         { key: 'near', label: 'Near Me', to: '#/near' },
+        { key: 'plan', label: 'Plan to Visit', to: '#/plan' },
       ] },
       { label: 'Visit Details', submenu: [
         { key: 'visits', label: 'Visits', to: '#/visits' },
@@ -34,7 +35,7 @@
   const ICON = {
     Dashboard: 'i-dash', Master: 'i-box', 'Field Work': 'i-compass', Invoice: 'i-receipt', Tools: 'i-mic', Settings: 'i-settings',
     Outreach: 'i-send', 'Visit Details': 'i-clip',
-    dashboard: 'i-dash', projects: 'i-box', customers: 'i-users', share: 'i-share', route: 'i-route', near: 'i-locate',
+    dashboard: 'i-dash', projects: 'i-box', customers: 'i-users', share: 'i-share', route: 'i-route', near: 'i-locate', plan: 'i-clip',
     visits: 'i-pin', followups: 'i-cal', invoice: 'i-file', invoices: 'i-archive', password: 'i-key', voice: 'i-mic',
   };
   const CARD_GRADS = ['g-blue', 'g-teal', 'g-violet', 'g-amber', 'g-rose', 'g-sky', 'g-emerald'];

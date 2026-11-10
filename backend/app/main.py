@@ -1200,6 +1200,137 @@ def nearby(body: NearbyIn, uid: int = Depends(current_user)):
     return out
 
 
+# ---------------------------------------------------------------- plan to visit (places saved from Near Me)
+PLAN_STATUSES = ("Planned", "Visited", "Skipped")
+
+
+class PlanItemIn(BaseModel):
+    placeId: Optional[str] = None
+    name: str
+    category: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    mapsUrl: Optional[str] = None
+    rating: Optional[float] = None
+    ratingCount: Optional[int] = None
+
+
+class PlanBulkIn(BaseModel):
+    items: List[PlanItemIn]
+    planDate: Optional[dt.date] = None
+
+
+class PlanPatchIn(BaseModel):
+    status: Optional[str] = None
+    planDate: Optional[dt.date] = None
+    clearPlanDate: bool = False
+    notes: Optional[str] = None
+    visitId: Optional[int] = None
+
+
+class PlanIdsIn(BaseModel):
+    ids: List[int]
+    status: Optional[str] = None
+
+
+def _plan_out(r):
+    return {
+        "id": r["Id"], "placeId": r["PlaceId"], "name": r["Name"], "category": r["Category"], "address": r["Address"],
+        "phone": r["Phone"], "lat": r["Latitude"], "lng": r["Longitude"], "mapsUrl": r["MapsUrl"], "rating": r["Rating"],
+        "ratingCount": r["RatingCount"], "planDate": r["PlanDate"], "status": r["Status"], "visitId": r["VisitId"],
+        "notes": r["Notes"], "createdAt": r["CreatedAt"],
+    }
+
+
+def _check_status(s):
+    if s not in PLAN_STATUSES:
+        raise HTTPException(400, "Invalid status")
+
+
+@app.get("/api/plan")
+def list_plan(uid: int = Depends(current_user)):
+    rows = db.query(
+        "SELECT * FROM PlanVisits WHERE UserId=%s ORDER BY CASE Status WHEN 'Planned' THEN 0 ELSE 1 END, "
+        "CASE WHEN PlanDate IS NULL THEN 1 ELSE 0 END, PlanDate, Name",
+        (uid,),
+    )
+    return [_plan_out(r) for r in rows]
+
+
+@app.post("/api/plan/bulk")
+def add_plan(body: PlanBulkIn, uid: int = Depends(current_user)):
+    """Add places to the plan; places already in it (same place id, or same name + address) are skipped."""
+    if not body.items:
+        raise HTTPException(400, "Select at least one place")
+    if len(body.items) > 200:
+        raise HTTPException(400, "Too many places at once (max 200)")
+    have = db.query("SELECT PlaceId, Name, Address FROM PlanVisits WHERE UserId=%s", (uid,))
+    ids = {r["PlaceId"] for r in have if r["PlaceId"]}
+    keys = {((r["Name"] or "").strip().lower(), (r["Address"] or "").strip().lower()) for r in have}
+    s = lambda v, n: ((v or "").strip()[:n] or None)  # noqa: E731
+    added = skipped = 0
+    with db.conn() as c:
+        cur = c.cursor()
+        for it in body.items:
+            name = (it.name or "").strip()
+            key = (name.lower(), (it.address or "").strip().lower())
+            if not name or (it.placeId and it.placeId in ids) or key in keys:
+                skipped += 1
+                continue
+            cur.execute(
+                "INSERT INTO PlanVisits(UserId,PlaceId,Name,Category,Address,Phone,Latitude,Longitude,MapsUrl,Rating,RatingCount,PlanDate) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (uid, s(it.placeId, 300), name[:300], s(it.category, 100), s(it.address, 600), s(it.phone, 60),
+                 it.lat, it.lng, s(it.mapsUrl, 1000), it.rating, it.ratingCount, body.planDate),
+            )
+            if it.placeId:
+                ids.add(it.placeId)
+            keys.add(key)
+            added += 1
+    return {"added": added, "skipped": skipped}
+
+
+@app.patch("/api/plan/{pid}")
+def update_plan(pid: int, body: PlanPatchIn, uid: int = Depends(current_user)):
+    r = db.query("SELECT * FROM PlanVisits WHERE Id=%s AND UserId=%s", (pid, uid), one=True)
+    if not r:
+        raise HTTPException(404, "Plan item not found")
+    if body.status is not None:
+        _check_status(body.status)
+    plan_date = None if body.clearPlanDate else (body.planDate or r["PlanDate"])
+    row = db.execute(
+        "UPDATE PlanVisits SET Status=%s,PlanDate=%s,Notes=%s,VisitId=%s,UpdatedAt=SYSUTCDATETIME() OUTPUT INSERTED.* "
+        "WHERE Id=%s AND UserId=%s",
+        (body.status or r["Status"], plan_date, (body.notes.strip() or None) if body.notes is not None else r["Notes"],
+         body.visitId if body.visitId is not None else r["VisitId"], pid, uid),
+    )
+    return _plan_out(row)
+
+
+def _id_list(ids):
+    ids = [int(i) for i in ids][:500]
+    if not ids:
+        raise HTTPException(400, "Select at least one place")
+    return ids, ",".join(["%s"] * len(ids))
+
+
+@app.post("/api/plan/bulk-status")
+def plan_bulk_status(body: PlanIdsIn, uid: int = Depends(current_user)):
+    _check_status(body.status)
+    ids, ph = _id_list(body.ids)
+    db.execute(f"UPDATE PlanVisits SET Status=%s,UpdatedAt=SYSUTCDATETIME() WHERE UserId=%s AND Id IN ({ph})", (body.status, uid, *ids))
+    return {"ok": True}
+
+
+@app.post("/api/plan/bulk-delete")
+def plan_bulk_delete(body: PlanIdsIn, uid: int = Depends(current_user)):
+    ids, ph = _id_list(body.ids)
+    db.execute(f"DELETE FROM PlanVisits WHERE UserId=%s AND Id IN ({ph})", (uid, *ids))
+    return {"ok": True}
+
+
 class ClinicIn(BaseModel):
     name: str
     address: Optional[str] = None

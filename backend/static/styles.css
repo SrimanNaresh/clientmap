@@ -613,3 +613,23 @@ label{min-width:0}
 .lk-km.lk-add{grid-template-columns:minmax(0,160px) auto}
 .lk-add{border-top:1px dashed var(--ink-200);padding-top:8px}
 @media(max-width:560px){.nm-row{grid-template-columns:1fr}.lk-cat,.lk-cat.lk-add{grid-template-columns:1fr 1fr}.lk-cat input[data-v]{grid-column:1/-1;order:2}.lk-cat input[data-n]{grid-column:1/-1}.lk-cat .btn{order:3}.lk-km{grid-template-columns:minmax(0,1fr) auto auto}.lk-km.lk-add{grid-template-columns:minmax(0,1fr) auto}}
+/* bulk select (Near Me + Plan to Visit) */
+.nm-bulk{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:0 0 10px;padding:8px 12px;background:#fff;border:1px solid var(--ink-100);border-radius:12px;position:sticky;top:0;z-index:5;box-shadow:var(--shadow-soft)}
+.nm-bulk:empty{display:none}
+.nm-bulk .btn{display:inline-flex;align-items:center;gap:.3rem}
+.nm-all{display:inline-flex;align-items:center;gap:.45rem;font-weight:600;font-size:.75rem;cursor:pointer;white-space:nowrap}
+.nm-all input,.nm-pickbox input{width:18px;height:18px;margin:0;accent-color:var(--brand-600,#2563eb);cursor:pointer}
+.nm-cnt{font-size:.72rem}
+.nm-date,.pv-date{display:inline-flex;align-items:center;gap:.4rem;font-size:.72rem;font-weight:600;margin-left:auto}
+.nm-date input,.pv-date input{width:auto;padding:.25rem .45rem;font-size:.75rem}
+.pv-date{margin-left:0}
+.nm-pickbox{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 6px 0 4px;border-radius:99px;background:var(--ink-50);color:var(--ink-600);font-size:.7rem;font-weight:700;cursor:pointer}
+.nm-n.done{background:#dcfce7;color:#047857}
+.nm-card.sel{border-color:#93c5fd;box-shadow:0 0 0 2px #dbeafe}
+.nm-planned{color:#1d4ed8;background:#eff6ff;border-color:#bfdbfe}
+.pv-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.pv-tab{display:inline-flex;align-items:center;gap:6px;padding:.35rem .8rem;border-radius:99px;border:1px solid var(--ink-100);background:#fff;font-size:.75rem;font-weight:600;color:var(--ink-600);cursor:pointer}
+.pv-tab span{background:var(--ink-50);border-radius:99px;padding:0 .45rem;font-size:.68rem}
+.pv-tab.on{background:#2563eb;border-color:#2563eb;color:#fff}
+.pv-tab.on span{background:rgba(255,255,255,.25)}
+@media(max-width:560px){.nm-date{margin-left:0;width:100%}.nm-bulk{position:static}.nm-bulk .btn{flex:1 1 auto;justify-content:center}}

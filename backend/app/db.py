@@ -202,6 +202,28 @@ SCHEMA = [
         Value NVARCHAR(300) NULL,
         SortOrder INT NOT NULL DEFAULT 0,
         IsDeleted BIT NOT NULL DEFAULT 0)""",
+    # places picked from Near Me to visit later
+    """IF OBJECT_ID('dbo.PlanVisits') IS NULL CREATE TABLE dbo.PlanVisits(
+        Id INT IDENTITY PRIMARY KEY,
+        UserId INT NOT NULL REFERENCES dbo.Users(Id),
+        PlaceId NVARCHAR(300) NULL,
+        Name NVARCHAR(300) NOT NULL,
+        Category NVARCHAR(100) NULL,
+        Address NVARCHAR(600) NULL,
+        Phone NVARCHAR(60) NULL,
+        Latitude FLOAT NULL,
+        Longitude FLOAT NULL,
+        MapsUrl NVARCHAR(1000) NULL,
+        Rating FLOAT NULL,
+        RatingCount INT NULL,
+        PlanDate DATE NULL,
+        Status NVARCHAR(20) NOT NULL DEFAULT 'Planned',
+        VisitId INT NULL,
+        Notes NVARCHAR(1000) NULL,
+        CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME())""",
+    """IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_PlanVisits_User')
+        CREATE INDEX IX_PlanVisits_User ON dbo.PlanVisits(UserId, Status)""",
     """IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Visits_User')
         CREATE INDEX IX_Visits_User ON dbo.Visits(UserId, IsDeleted, VisitDate)""",
 ]

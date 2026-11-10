@@ -121,7 +121,7 @@ $$('[data-logout]').forEach(b => b.addEventListener('click', async () => {
 const closeDrawer = () => NAV.close();
 
 const ROUTES = {
-  '': dashboard, projects, customers, share, route: routeView, near: nearView, visits, visit: visitForm,
+  '': dashboard, projects, customers, share, route: routeView, near: nearView, plan: planView, visits, visit: visitForm,
   followups, invoice: invoiceView, invoices, password: passwordView, voice: voiceView,
 };
 async function router() {
@@ -520,6 +520,8 @@ async function nearView() {
   showLoc();
   // names already in Customer Master, so saved places show "Saved"
   api('GET', '/api/customers').then(cs => { st.saved = new Set(cs.map(c => normName(c.name))); if (st.data) drawNear(); }).catch(() => {});
+  // places already in Plan to Visit show "Planned" and are not selectable again
+  api('GET', '/api/plan').then(ps => { st.planned = new Set(ps.flatMap(p => [p.placeId, planKey(p)]).filter(Boolean)); if (st.data) drawNear(); }).catch(() => {});
 
   const locate = () => new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error('This browser cannot share your location.'));
@@ -547,26 +549,62 @@ async function nearView() {
     try {
       st.data = await api('POST', '/api/nearby', { lat: st.loc.lat, lng: st.loc.lng, categoryIds: st.catId === 'all' ? [] : [st.catId], radiusKm: st.km });
       st.searchedLabel = st.catId === 'all' ? 'places' : (st.cats.find(c => c.id === st.catId)?.name || 'places');
-      st.filter = ''; drawNear();
+      st.filter = ''; st.sel = new Set(); drawNear();
     } catch (e) { $('#nmRes').innerHTML = ''; toast(e.message, true); }
     finally { go.disabled = false; go.lastChild.textContent = 'Search'; }
   };
   if (st.data) drawNear();
 }
+const planKey = p => `${normName(p.name)}|${normName(p.address)}`;
+const isPlanned = p => !!(nearState?.planned && (nearState.planned.has(p.id) || nearState.planned.has(planKey(p))));
 function drawNear() {
   const st = nearState, d = st.data, res = $('#nmRes'); if (!res) return;
+  st.sel ||= new Set();
   const counts = d.places.reduce((a, p) => (a[p.categoryName] = (a[p.categoryName] || 0) + 1, a), {});
   const summary = Object.entries(counts).map(([c, n]) => `${esc(c)}: ${n}`).join(' · ');
   if (!d.places.length) { res.innerHTML = `<div class="card empty">No ${esc(st.searchedLabel || 'places')} found within ${km(d.radiusM)}. Try a wider distance.</div>`; return; }
   res.innerHTML = `<div class="nm-bar"><b>${d.places.length} place${d.places.length === 1 ? '' : 's'} within ${km(d.radiusM)}</b><span class="muted">${summary}</span>
       <input id="nmQ" placeholder="Filter by name or area…" value="${esc(st.filter)}"></div>
+    <div class="nm-bulk" id="nmBulk"></div>
     <div class="nm-list" id="nmList"></div>`;
+  let rows = [];
+  // bulk bar: select all (shown rows) + add the selected places to Plan to Visit
+  const drawBulk = () => {
+    const pickable = rows.filter(p => !isPlanned(p));
+    const n = [...st.sel].filter(id => d.places.some(p => p.id === id && !isPlanned(p))).length;
+    const all = pickable.length > 0 && pickable.every(p => st.sel.has(p.id));
+    $('#nmBulk').innerHTML = `<label class="nm-all"><input type="checkbox" id="nmAll" ${all ? 'checked' : ''} ${pickable.length ? '' : 'disabled'}>
+        Select all${pickable.length ? ` (${pickable.length})` : ''}</label>
+      <span class="muted nm-cnt">${n ? `${n} selected` : 'Tick places to plan a visit'}</span>
+      <label class="nm-date">Visit on<input type="date" id="nmPlanDate" value="${esc(st.planDate || '')}"></label>
+      <button type="button" class="btn primary sm" id="nmAddPlan" ${n ? '' : 'disabled'}><svg class="ic"><use href="#i-cal"/></svg>Add ${n || ''} to Plan to Visit</button>
+      <a class="btn sm" href="#/plan">Open plan</a>`;
+    const box = $('#nmAll'); box.indeterminate = !all && pickable.some(p => st.sel.has(p.id));
+    box.onchange = () => { pickable.forEach(p => box.checked ? st.sel.add(p.id) : st.sel.delete(p.id)); draw(); };
+    $('#nmPlanDate').onchange = e => { st.planDate = e.target.value; };
+    $('#nmAddPlan').onclick = async e => {
+      const b = e.currentTarget, items = d.places.filter(p => st.sel.has(p.id) && !isPlanned(p));
+      if (!items.length) return;
+      b.disabled = true;
+      try {
+        const r = await api('POST', '/api/plan/bulk', {
+          planDate: st.planDate || null,
+          items: items.map(p => ({ placeId: p.id, name: p.name, category: p.categoryName, address: p.address, phone: p.phone,
+            lat: p.lat, lng: p.lng, mapsUrl: p.mapsUrl, rating: p.rating, ratingCount: p.ratingCount })),
+        });
+        st.planned ||= new Set(); items.forEach(p => { st.planned.add(p.id); st.planned.add(planKey(p)); st.sel.delete(p.id); });
+        toast(`${r.added} added to Plan to Visit${r.skipped ? ` · ${r.skipped} already there` : ''}`);
+        draw();
+      } catch (err) { toast(err.message, true); b.disabled = false; }
+    };
+  };
   const draw = () => {
     const q = st.filter.toLowerCase();
-    const rows = d.places.filter(p => !q || `${p.name} ${p.address}`.toLowerCase().includes(q));
+    rows = d.places.filter(p => !q || `${p.name} ${p.address}`.toLowerCase().includes(q));
     const dir = p => `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
-    $('#nmList').innerHTML = rows.length ? rows.map((p, i) => `<article class="nm-card">
-        <div class="nm-top"><span class="nm-n">${i + 1}</span><div class="nm-main"><b>${esc(p.name)}</b>
+    $('#nmList').innerHTML = rows.length ? rows.map((p, i) => `<article class="nm-card${st.sel.has(p.id) ? ' sel' : ''}">
+        <div class="nm-top">${isPlanned(p) ? '<span class="nm-n done" title="In Plan to Visit">✓</span>'
+          : `<label class="nm-pickbox" title="Select"><input type="checkbox" data-pick="${esc(p.id)}" ${st.sel.has(p.id) ? 'checked' : ''} aria-label="Select ${esc(p.name)}"><span>${i + 1}</span></label>`}<div class="nm-main"><b>${esc(p.name)}</b>
           <div class="nm-meta"><span class="nm-cat" style="--c:${catColor(p.category)}">${esc(p.categoryName)}</span><span>${km(p.distanceM)} away</span>
           ${p.openNow === true ? '<span class="nm-open">Open now</span>' : p.openNow === false ? '<span class="nm-closed">Closed now</span>' : ''}
           ${p.rating ? `<span>★ ${Number(p.rating).toFixed(1)}${p.ratingCount ? ` (${p.ratingCount})` : ''}</span>` : ''}</div></div></div>
@@ -575,6 +613,7 @@ function drawNear() {
         <div class="nm-acts">${p.phone ? `<a class="btn sm" href="tel:${esc(p.phone.replace(/\s+/g, ''))}">Call</a>` : ''}
           <a class="btn sm primary" href="${dir(p)}" target="_blank" rel="noopener">Directions</a>
           <a class="btn sm" href="${esc(p.mapsUrl)}" target="_blank" rel="noopener">View on map</a>
+          ${isPlanned(p) ? '<span class="nm-saved nm-planned">✓ Planned</span>' : ''}
           ${st.saved?.has(normName(p.name)) ? '<span class="nm-saved">✓ Saved</span>'
             : `<button type="button" class="btn sm nm-save" data-save="${esc(p.id)}"><svg class="ic"><use href="#i-plus"/></svg>Save</button>`}</div>
       </article>`).join('') : '<div class="card empty">No places match the filter.</div>';
@@ -585,8 +624,118 @@ function drawNear() {
         (st.saved ||= new Set()).add(normName(saved.name)); draw();
       });
     });
+    $$('[data-pick]', $('#nmList')).forEach(c => c.onchange = () => {
+      c.checked ? st.sel.add(c.dataset.pick) : st.sel.delete(c.dataset.pick);
+      c.closest('.nm-card').classList.toggle('sel', c.checked); drawBulk();
+    });
+    drawBulk();
   };
   $('#nmQ').oninput = e => { st.filter = e.target.value; draw(); };
+  draw();
+}
+
+// ------------------------------------------------------------ plan to visit (places saved from Near Me)
+let visitPrefill = null;   // set by "Log visit" so the new-visit form opens pre-filled
+const PLAN_ST = ['Planned', 'Visited', 'Skipped'];
+const planState = { status: 'Planned', q: '', sel: new Set() };
+async function planView() {
+  title('Plan to Visit');
+  const st = planState;
+  let list = await api('GET', '/api/plan');
+  view.innerHTML = `<div class="toolbar"><h2 class="grow">Plan to Visit</h2><a class="btn" href="#/near"><svg class="ic"><use href="#i-locate"/></svg>Add from Near Me</a></div>
+    <div class="pv-tabs" id="pvTabs" role="tablist"></div>
+    <div class="toolbar pv-tools"><input id="pvQ" class="grow" placeholder="Filter by name, area or category…" value="${esc(st.q)}"></div>
+    <div class="nm-bulk" id="pvBulk"></div>
+    <div class="nm-list" id="pvList"></div>`;
+  const today = CFG.today || isoToday();
+  const dir = p => p.lat != null ? `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}` : `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${p.name} ${p.address || ''}`)}`;
+  const tel = p => esc((p.phone || '').replace(/\s+/g, ''));
+  let rows = [];
+  const reload = async () => { list = await api('GET', '/api/plan'); st.sel = new Set([...st.sel].filter(id => list.some(p => p.id === id))); draw(); };
+  const drawTabs = () => {
+    const n = s => list.filter(p => p.status === s).length;
+    $('#pvTabs').innerHTML = [...PLAN_ST, 'All'].map(s => `<button type="button" role="tab" class="pv-tab${st.status === s ? ' on' : ''}" data-tab="${s}" aria-selected="${st.status === s}">${s}<span>${s === 'All' ? list.length : n(s)}</span></button>`).join('');
+    $$('[data-tab]').forEach(b => b.onclick = () => { st.status = b.dataset.tab; st.sel.clear(); draw(); });
+  };
+  const drawBulk = () => {
+    const n = rows.filter(p => st.sel.has(p.id)).length, all = rows.length > 0 && n === rows.length;
+    const mv = s => st.status !== s ? `<button type="button" class="btn sm" data-bulk="${s}" ${n ? '' : 'disabled'}>Mark ${s.toLowerCase()}</button>` : '';
+    $('#pvBulk').innerHTML = rows.length ? `<label class="nm-all"><input type="checkbox" id="pvAll" ${all ? 'checked' : ''}>Select all (${rows.length})</label>
+      <span class="muted nm-cnt">${n ? `${n} selected` : 'Tick places for bulk actions'}</span>
+      <button type="button" class="btn primary sm" id="pvRoute" ${n ? '' : 'disabled'} title="Opens Google Maps with the selected places as stops (up to 10)"><svg class="ic"><use href="#i-route"/></svg>Route</button>
+      ${PLAN_ST.map(mv).join('')}
+      <button type="button" class="btn sm danger" id="pvDel" ${n ? '' : 'disabled'}>Remove</button>` : '';
+    if (!rows.length) return;
+    const box = $('#pvAll'); box.indeterminate = n > 0 && !all;
+    box.onchange = () => { rows.forEach(p => box.checked ? st.sel.add(p.id) : st.sel.delete(p.id)); draw(); };
+    const ids = () => rows.filter(p => st.sel.has(p.id)).map(p => p.id);
+    $$('[data-bulk]').forEach(b => b.onclick = async () => {
+      try { await api('POST', '/api/plan/bulk-status', { ids: ids(), status: b.dataset.bulk }); toast(`${ids().length} marked ${b.dataset.bulk.toLowerCase()}`); st.sel.clear(); reload(); }
+      catch (e) { toast(e.message, true); }
+    });
+    $('#pvDel').onclick = async () => {
+      const k = ids().length;
+      if (!await confirmBox(`Remove ${k} place${k === 1 ? '' : 's'} from Plan to Visit?`, 'Remove')) return;
+      try { await api('POST', '/api/plan/bulk-delete', { ids: ids() }); toast('Removed'); st.sel.clear(); reload(); } catch (e) { toast(e.message, true); }
+    };
+    $('#pvRoute').onclick = () => {
+      const pts = rows.filter(p => st.sel.has(p.id) && p.lat != null).slice(0, 10);
+      if (!pts.length) return toast('Selected places have no map location', true);
+      const ll = p => `${p.lat},${p.lng}`, last = pts[pts.length - 1], mid = pts.slice(0, -1);
+      window.open(`https://www.google.com/maps/dir/?api=1&destination=${ll(last)}${mid.length ? `&waypoints=${encodeURIComponent(mid.map(ll).join('|'))}` : ''}&travelmode=driving`, '_blank', 'noopener');
+      if (st.sel.size > 10) toast('Google Maps takes up to 10 stops; the first 10 were used');
+    };
+  };
+  const draw = () => {
+    drawTabs();
+    const q = st.q.toLowerCase();
+    rows = list.filter(p => (st.status === 'All' || p.status === st.status) && (!q || `${p.name} ${p.address || ''} ${p.category || ''}`.toLowerCase().includes(q)));
+    $('#pvList').innerHTML = rows.length ? rows.map(p => {
+      const d = p.planDate ? String(p.planDate).slice(0, 10) : '', late = p.status === 'Planned' && d && d < today;
+      return `<article class="nm-card${st.sel.has(p.id) ? ' sel' : ''}">
+        <div class="nm-top"><label class="nm-pickbox" title="Select"><input type="checkbox" data-pick="${p.id}" ${st.sel.has(p.id) ? 'checked' : ''} aria-label="Select ${esc(p.name)}"></label>
+          <div class="nm-main"><b>${esc(p.name)}</b>
+          <div class="nm-meta">${p.category ? `<span class="nm-cat" style="--c:${hashColor(p.category)}">${esc(p.category)}</span>` : ''}
+            <span class="chip ${p.status === 'Visited' ? 'ok' : p.status === 'Skipped' ? '' : late ? 'overdue' : 'warn'}">${esc(p.status)}${d ? ` · ${fmtDate(d)}` : ''}${late ? ' · Overdue' : ''}</span>
+            ${p.rating ? `<span>★ ${Number(p.rating).toFixed(1)}${p.ratingCount ? ` (${p.ratingCount})` : ''}</span>` : ''}</div></div></div>
+        <div class="nm-addr">${esc(p.address) || '<span class="muted">Address not listed</span>'}</div>
+        ${p.phone ? `<div class="nm-phone"><a href="tel:${tel(p)}">${esc(p.phone)}</a></div>` : ''}
+        <label class="pv-date">Visit on<input type="date" data-date="${p.id}" value="${esc(d)}"></label>
+        <div class="nm-acts">${p.phone ? `<a class="btn sm" href="tel:${tel(p)}">Call</a>` : ''}
+          <a class="btn sm primary" href="${dir(p)}" target="_blank" rel="noopener">Directions</a>
+          ${p.status === 'Visited' && p.visitId ? `<a class="btn sm" href="#/visit/${p.visitId}">View visit</a>` : `<button type="button" class="btn sm" data-log="${p.id}">Log visit</button>`}
+          ${p.status === 'Planned' ? `<button type="button" class="btn sm" data-st="${p.id}" data-to="Visited">Mark visited</button>`
+            : `<button type="button" class="btn sm" data-st="${p.id}" data-to="Planned">Back to planned</button>`}
+          <button type="button" class="btn sm danger" data-del="${p.id}">Remove</button></div>
+      </article>`;
+    }).join('') : `<div class="card empty" style="grid-column:1/-1">${list.length ? 'No places here.' : 'Nothing planned yet. Open <a href="#/near">Near Me</a>, tick places and choose “Add to Plan to Visit”.'}</div>`;
+    const L = $('#pvList'), byId = id => list.find(p => p.id === Number(id));
+    $$('[data-pick]', L).forEach(c => c.onchange = () => {
+      const id = Number(c.dataset.pick); c.checked ? st.sel.add(id) : st.sel.delete(id);
+      c.closest('.nm-card').classList.toggle('sel', c.checked); drawBulk();
+    });
+    $$('[data-date]', L).forEach(i => i.onchange = async () => {
+      try { await api('PATCH', `/api/plan/${i.dataset.date}`, i.value ? { planDate: i.value } : { clearPlanDate: true }); toast('Date saved'); reload(); }
+      catch (e) { toast(e.message, true); }
+    });
+    $$('[data-st]', L).forEach(b => b.onclick = async () => {
+      try { await api('PATCH', `/api/plan/${b.dataset.st}`, { status: b.dataset.to }); toast(`Marked ${b.dataset.to.toLowerCase()}`); reload(); }
+      catch (e) { toast(e.message, true); }
+    });
+    $$('[data-del]', L).forEach(b => b.onclick = async () => {
+      const p = byId(b.dataset.del);
+      if (!await confirmBox(`Remove "${p.name}" from Plan to Visit?`, 'Remove')) return;
+      try { await api('POST', '/api/plan/bulk-delete', { ids: [p.id] }); toast('Removed'); reload(); } catch (e) { toast(e.message, true); }
+    });
+    $$('[data-log]', L).forEach(b => b.onclick = () => {
+      const p = byId(b.dataset.log);
+      visitPrefill = { planId: p.id, clinicName: p.name, latitude: p.lat, longitude: p.lng, locationText: p.address || '' };
+      location.hash = '#/visit/new';
+    });
+    drawBulk();
+  };
+  let t;
+  $('#pvQ').oninput = e => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value; draw(); }, 150); };
   draw();
 }
 
@@ -793,9 +942,10 @@ async function visitForm(id) {
   const isNew = !id || id === 'new';
   title(isNew ? 'New visit' : 'Edit visit');
   const [v, clinics] = await Promise.all([
-    isNew ? Promise.resolve({ visitDate: CFG.today || isoToday(), status: 'Visited', images: [] }) : api('GET', `/api/visits/${id}`),
+    isNew ? Promise.resolve({ visitDate: CFG.today || isoToday(), status: 'Visited', images: [], ...(visitPrefill || {}) }) : api('GET', `/api/visits/${id}`),
     api('GET', '/api/clinics').catch(() => []),
   ]);
+  const planId = isNew ? visitPrefill?.planId : null; visitPrefill = null;
   const pending = []; // File objects to upload after save
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   view.innerHTML = `<div class="toolbar"><a class="btn" href="#/visits">&#8592; Visit list</a><h2 class="grow" style="margin:0">${isNew ? 'New visit' : 'Edit visit'}</h2></div>
@@ -922,7 +1072,8 @@ async function visitForm(id) {
         const fd = new FormData(); pending.forEach(p => fd.append('files', p.file, p.file.name || 'photo.jpg'));
         await api('POST', `/api/visits/${r.id}/images`, fd);
       }
-      toast('Visit saved'); location.hash = '#/visits';
+      if (planId) await api('PATCH', `/api/plan/${planId}`, { status: 'Visited', visitId: r.id }).catch(() => {});
+      toast('Visit saved'); location.hash = planId ? '#/plan' : '#/visits';
     } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = 'Save visit'; }
   };
 }
